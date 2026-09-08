@@ -63,6 +63,10 @@ export const DEFAULT_CONFIG: SandboxConfigFile = {
 	weakerNestedSandbox: false,
 	onUnavailable: "error",
 	extraBwrapArgs: [],
+	tools: {
+		enabled: true,
+		requireAllowWrite: true,
+	},
 };
 
 // ---------------------------------------------------------------------------
@@ -106,9 +110,11 @@ const TOP_LEVEL_KEYS = new Set([
 	"weakerNestedSandbox",
 	"onUnavailable",
 	"extraBwrapArgs",
+	"tools",
 ]);
 const FILESYSTEM_KEYS = new Set(["allowWrite", "denyWrite", "denyRead"]);
 const ENV_KEYS = new Set(["passthrough", "deny", "set"]);
+const TOOLS_KEYS = new Set(["enabled", "requireAllowWrite"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -217,6 +223,24 @@ export function validateConfigLayer(raw: unknown, source: string, warnings: stri
 		}
 	}
 
+	if (raw.tools !== undefined) {
+		if (isRecord(raw.tools)) {
+			warnUnknownKeys(raw.tools, TOOLS_KEYS, "tools.", warnings);
+			const tools: SandboxConfigFile["tools"] = {};
+			if (raw.tools.enabled !== undefined) {
+				if (typeof raw.tools.enabled === "boolean") tools.enabled = raw.tools.enabled;
+				else warnings.push(`tools.enabled: expected boolean, ignoring`);
+			}
+			if (raw.tools.requireAllowWrite !== undefined) {
+				if (typeof raw.tools.requireAllowWrite === "boolean") tools.requireAllowWrite = raw.tools.requireAllowWrite;
+				else warnings.push(`tools.requireAllowWrite: expected boolean, ignoring`);
+			}
+			out.tools = tools;
+		} else {
+			warnings.push(`tools: expected object, ignoring`);
+		}
+	}
+
 	return out;
 }
 
@@ -270,6 +294,14 @@ export function mergeConfigLayers(
 		weakerNestedSandbox: pick(p.weakerNestedSandbox, g.weakerNestedSandbox, defaults.weakerNestedSandbox),
 		onUnavailable: pick(p.onUnavailable, g.onUnavailable, defaults.onUnavailable),
 		extraBwrapArgs: pick(p.extraBwrapArgs, g.extraBwrapArgs, defaults.extraBwrapArgs),
+		tools: {
+			enabled: pick(p.tools?.enabled, g.tools?.enabled, defaults.tools?.enabled),
+			requireAllowWrite: pick(
+				p.tools?.requireAllowWrite,
+				g.tools?.requireAllowWrite,
+				defaults.tools?.requireAllowWrite,
+			),
+		},
 	};
 }
 
@@ -375,6 +407,15 @@ function normalize(
 		weakerNestedSandbox: merged.weakerNestedSandbox ?? false,
 		onUnavailable: merged.onUnavailable ?? "error",
 		extraBwrapArgs: merged.extraBwrapArgs ?? [],
+		rules: {
+			allowWrite: merged.filesystem?.allowWrite ?? [],
+			denyWrite: merged.filesystem?.denyWrite ?? [],
+			denyRead: merged.filesystem?.denyRead ?? [],
+		},
+		tools: {
+			enabled: merged.tools?.enabled ?? true,
+			requireAllowWrite: merged.tools?.requireAllowWrite ?? true,
+		},
 		sources,
 	};
 }

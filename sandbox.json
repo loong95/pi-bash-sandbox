@@ -14,5 +14,6 @@
   "unsharePid": true,
   "weakerNestedSandbox": false,
   "onUnavailable": "error",
-  "extraBwrapArgs": []
+  "extraBwrapArgs": [],
+  "tools": { "enabled": true, "requireAllowWrite": true }
 }

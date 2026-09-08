@@ -10,6 +10,14 @@ export type NetworkMode = "none" | "host";
 export type TmpMode = "private" | "shared";
 export type UnavailablePolicy = "error" | "fallback";
 
+/** Policy for intercepting read/write/edit via the `tool_call` hook. */
+export interface ToolsPolicyConfig {
+	/** Intercept read/write/edit. Default true. */
+	enabled?: boolean;
+	/** Require write/edit targets to be inside an allowWrite rule. Default true. */
+	requireAllowWrite?: boolean;
+}
+
 /** User-editable configuration. Every field is optional; layers merge. */
 export interface SandboxConfigFile {
 	enabled?: boolean;
@@ -30,6 +38,7 @@ export interface SandboxConfigFile {
 	onUnavailable?: UnavailablePolicy;
 	/** Raw bwrap args appended verbatim. Powerful and risky; surfaced by /sandbox. */
 	extraBwrapArgs?: string[];
+	tools?: ToolsPolicyConfig;
 }
 
 /** A filesystem rule expanded to a concrete path. */
@@ -55,6 +64,18 @@ export interface ConfigSources {
 	warnings: string[];
 }
 
+/** Raw (unexpanded) path rules, used by the tool_call policy matcher. */
+export interface RawPathRules {
+	allowWrite: string[];
+	denyWrite: string[];
+	denyRead: string[];
+}
+
+export interface ResolvedToolsPolicy {
+	enabled: boolean;
+	requireAllowWrite: boolean;
+}
+
 /** Fully resolved config, ready for `buildBwrapArgs`. */
 export interface ResolvedSandboxConfig {
 	enabled: boolean;
@@ -68,6 +89,9 @@ export interface ResolvedSandboxConfig {
 	weakerNestedSandbox: boolean;
 	onUnavailable: UnavailablePolicy;
 	extraBwrapArgs: string[];
+	/** Raw rules for the tool_call policy matcher (globs are not pre-expanded). */
+	rules: RawPathRules;
+	tools: ResolvedToolsPolicy;
 	sources: ConfigSources;
 }
 

@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { clearConfigCache, loadSandboxConfig, resolveAgentDir } from "./src/config.ts";
 import { createSandboxedBashOperations } from "./src/exec.ts";
+import { evaluateToolCall } from "./src/policy.ts";
 import { clearProbeCache, probeBwrap } from "./src/probe.ts";
 import { clearProjectCache, resolveProjectRoot } from "./src/project.ts";
 import { formatSandboxStatus } from "./src/ui.ts";
@@ -68,6 +69,34 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 	// Route `!` / `!!` user commands through the sandbox too.
 	pi.on("user_bash", async (_event, ctx) => {
 		return { operations: makeOperations(ctx.isProjectTrusted(), ctx) };
+	});
+
+	// Gate the built-in read/write/edit tools, which do NOT run inside bwrap.
+	pi.on("tool_call", async (event, ctx) => {
+		if (pi.getFlag("no-sandbox")) return undefined;
+		if (event.toolName !== "read" && event.toolName !== "write" && event.toolName !== "edit") {
+			return undefined;
+		}
+		const path = event.input.path;
+		if (typeof path !== "string") return undefined;
+
+		const cwd = ctx.cwd;
+		const project = await resolveProjectRoot(cwd);
+		const config = loadSandboxConfig({
+			projectRoot: project.projectRoot,
+			worktreeRoot: project.worktreeRoot,
+			cwd,
+			projectTrusted: ctx.isProjectTrusted(),
+			agentDir: resolveAgentDir(),
+		});
+		if (!config.enabled) return undefined;
+
+		const decision = evaluateToolCall({ toolName: event.toolName, path, cwd, config });
+		if (decision.block) {
+			ctx.ui.notify(decision.reason ?? "blocked by sandbox policy", "warning");
+			return { block: true, reason: decision.reason };
+		}
+		return undefined;
 	});
 
 	pi.registerCommand("sandbox", {

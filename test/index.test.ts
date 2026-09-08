@@ -19,7 +19,7 @@ function mockPi() {
 	const flags = new Map<string, unknown>();
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const tools = new Map<string, Record<string, unknown>>();
-	let userBashHandler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
 
 	const api = {
 		registerFlag: (name: string, options: { default?: unknown }) => flags.set(name, options.default),
@@ -28,11 +28,11 @@ function mockPi() {
 		registerCommand: (name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
 			commands.set(name, options),
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown>) => {
-			if (event === "user_bash") userBashHandler = handler;
+			handlers.set(event, handler);
 		},
 	} as unknown as ExtensionAPI;
 
-	return { api, flags, commands, tools, getUserBash: () => userBashHandler };
+	return { api, flags, commands, tools, getHandler: (name: string) => handlers.get(name) };
 }
 
 function mockCtx(cwd: string, notifications: string[]) {
@@ -54,13 +54,14 @@ function projectWithConfig(config: unknown): string {
 }
 
 test("extension registers the bash override, user_bash, and commands", () => {
-	const { api, flags, commands, tools, getUserBash } = mockPi();
+	const { api, flags, commands, tools, getHandler } = mockPi();
 	piBashSandbox(api);
 	assert.ok(flags.has("no-sandbox"));
 	assert.equal(tools.has("bash"), true);
 	assert.ok(commands.has("sandbox"));
 	assert.ok(commands.has("sandbox-reload"));
-	assert.ok(getUserBash());
+	assert.ok(getHandler("user_bash"));
+	assert.ok(getHandler("tool_call"));
 });
 
 test("registered bash tool runs commands inside the sandbox", { skip }, async () => {
@@ -94,4 +95,38 @@ test("/sandbox command reports the resolved config", { skip }, async () => {
 	assert.equal(notifications.length, 1);
 	assert.match(notifications[0], /bash sandbox: enabled/);
 	assert.match(notifications[0], /network: host/);
+});
+
+test("tool_call blocks read/write to denyRead paths", { skip }, async () => {
+	const project = projectWithConfig({ filesystem: { denyRead: ["secret.txt"] } });
+	writeFileSync(join(project, "secret.txt"), "TOPSECRET");
+	const { api, getHandler } = mockPi();
+	piBashSandbox(api);
+	const handler = getHandler("tool_call");
+	assert.ok(handler);
+
+	const blocked = (await handler({ toolName: "read", input: { path: "secret.txt" } }, mockCtx(project, []))) as {
+		block?: boolean;
+		reason?: string;
+	};
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason ?? "", /denyRead/);
+
+	const allowed = await handler({ toolName: "read", input: { path: "README.md" } }, mockCtx(project, []));
+	assert.equal(allowed, undefined);
+});
+
+test("tool_call blocks writes outside allowWrite", { skip }, async () => {
+	const project = projectWithConfig({ filesystem: { allowWrite: ["."] } });
+	const { api, getHandler } = mockPi();
+	piBashSandbox(api);
+	const handler = getHandler("tool_call");
+	assert.ok(handler);
+
+	const blocked = (await handler(
+		{ toolName: "write", input: { path: "/etc/pi-sandbox-probe", content: "x" } },
+		mockCtx(project, []),
+	)) as { block?: boolean; reason?: string };
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason ?? "", /outside allowWrite/);
 });

@@ -167,7 +167,7 @@ pi-bash-sandbox/
     exec.ts                # createSandboxedBashOperations (BashOperations)   ✅
     probe.ts               # bwrap 可用性与能力探测                          ✅
     ui.ts                  # /sandbox 输出                                  ✅
-    policy.ts              # allow/deny 匹配（供 tool_call 策略复用）          [未实现]
+    policy.ts              # allow/deny 匹配（供 tool_call 策略复用）          ✅
   test/
     bwrap.test.ts          # 纯函数 golden 测试
     config.test.ts
@@ -204,6 +204,7 @@ export interface SandboxConfigFile {
   weakerNestedSandbox?: boolean;
   onUnavailable?: "error" | "fallback";
   extraBwrapArgs?: string[];
+  tools?: { enabled?: boolean; requireAllowWrite?: boolean };
 }
 
 /** 已解析的路径：绝对、已 realpath、且已确认存在。 */
@@ -227,8 +228,12 @@ export interface ResolvedSandboxConfig {
   weakerNestedSandbox: boolean;
   onUnavailable: "error" | "fallback";
   extraBwrapArgs: string[];
+  /** 原始规则（未展开 glob），供 tool_call 策略匹配。 */
+  rules: { allowWrite: string[]; denyWrite: string[]; denyRead: string[] };
+  /** read/write/edit 的 tool_call 拦截策略。 */
+  tools: { enabled: boolean; requireAllowWrite: boolean };
   /** 配置来源，用于错误信息和 /sandbox 展示。 */
-  sources: { globalPath: string; projectPath: string; projectTrusted: boolean };
+  sources: { globalPath: string; projectPath: string | null; projectTrusted: boolean; warnings: string[] };
 }
 
 export interface BwrapCapabilities {
@@ -440,7 +445,8 @@ export default function (pi: ExtensionAPI) {
   "unsharePid": true,
   "weakerNestedSandbox": false,
   "onUnavailable": "error",
-  "extraBwrapArgs": []
+  "extraBwrapArgs": [],
+  "tools": { "enabled": true, "requireAllowWrite": true }
 }
 ```
 
@@ -519,7 +525,7 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 | 限制 | 说明 | 缓解 |
 |---|---|---|
 | 项目间可读 | `--ro-bind / /` 默认能读全盘 | 显式 `denyRead` 兄弟项目；或改最小 root |
-| 只隔离 bash | read/write/edit/终端/网页端不在沙箱内 | 文档写清；必要时用 `tool_call` 做策略层拦截 |
+| read/write/edit 不在 bwrap 内 | 它们由 `tool_call` 策略拦截（同一套 denyRead/denyWrite/allowWrite 规则） | 已实现 `policy.ts`；grep/find/ls、网页终端仍不拦截 |
 | 网络全开风险 | `host` 模式下命令可外联并读取沙箱内可见的密钥 | 默认 `none`；`--clearenv` 默认清洗密钥 |
 | env 泄密 | pi 进程 env 含 API key | 默认白名单 + deny 规则 |
 | 非特权 userns 限制 | Ubuntu 24.04 AppArmor、无 CAP_SYS_ADMIN 容器 | 启动自检 + `weakerNestedSandbox` 降级 |
@@ -577,6 +583,13 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 - `network: none/host`，`--clearenv` 环境白名单（默认透传 `PI_*`）。
 - 项目信任取自 `ctx.isProjectTrusted()`；禁用/回退时委托 `createLocalBashOperations`。
 - 60 个测试全绿，含真实 bwrap 的流式/timeout/abort 与扩展装配（mock `ExtensionAPI`）测试。
+
+### 阶段 1.5：read/write/edit 策略拦截 ✅ 已完成
+
+- `policy.ts` + `tool_call` 钩子：`read` 受 denyRead 限制；`write`/`edit` 受 denyRead/denyWrite 限制，且默认必须在 allowWrite 内。
+- 规则按原始字符串匹配，所以 `.env.*` / `*.pem` 对**尚不存在**的文件也生效（bwrap 只能 bind 已存在的路径）。
+- 新增 `tools.enabled` / `tools.requireAllowWrite` 配置项。
+- 76 个测试全绿。
 
 ### 阶段 2：per-project / worktree 与 pi-web
 

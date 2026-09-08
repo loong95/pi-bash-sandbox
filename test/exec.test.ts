@@ -24,6 +24,8 @@ function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSan
 		weakerNestedSandbox: false,
 		onUnavailable: "error",
 		extraBwrapArgs: [],
+		rules: { allowWrite: [], denyWrite: [], denyRead: [] },
+		tools: { enabled: true, requireAllowWrite: true },
 		sources: { globalPath: "/g", projectPath: null, projectTrusted: false, warnings: [] },
 		...overrides,
 	};

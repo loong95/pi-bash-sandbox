@@ -42,6 +42,9 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 	lines.push(`denyRead: ${formatPaths(config.denyRead)}`);
 	lines.push(`env passthrough: ${config.env.passthrough.join(", ") || "(none)"}`);
 	lines.push(`env deny: ${config.env.deny.join(", ") || "(none)"}`);
+	lines.push(
+		`tools: ${config.tools.enabled ? `intercepted (requireAllowWrite=${config.tools.requireAllowWrite})` : "NOT intercepted"}`,
+	);
 
 	if (config.extraBwrapArgs.length > 0) {
 		lines.push(`extraBwrapArgs (RISK — verbatim): ${config.extraBwrapArgs.join(" ")}`);

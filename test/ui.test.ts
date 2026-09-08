@@ -23,6 +23,8 @@ const CONFIG: ResolvedSandboxConfig = {
 	weakerNestedSandbox: false,
 	onUnavailable: "error",
 	extraBwrapArgs: [],
+	rules: { allowWrite: ["."], denyWrite: [".env"], denyRead: ["~/.ssh"] },
+	tools: { enabled: true, requireAllowWrite: true },
 	sources: {
 		globalPath: "/home/u/.pi/agent/sandbox.json",
 		projectPath: "/repo/wt/.pi/sandbox.json",
