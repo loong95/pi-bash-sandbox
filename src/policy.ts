@@ -131,3 +131,40 @@ export function evaluateToolCall(input: ToolCallPolicyInput): ToolCallPolicyDeci
 
 	return { block: false };
 }
+
+export interface PathExplanation {
+	target: string;
+	read: ToolCallPolicyDecision;
+	write: ToolCallPolicyDecision;
+	denyReadRules: string[];
+	denyWriteRules: string[];
+	allowWriteRules: string[];
+	/** True when the bash sandbox hides the path from reads. */
+	bashReadHidden: boolean;
+	/** True when the bash sandbox blocks writes (deny rule, or outside allowWrite). */
+	bashWriteBlocked: boolean;
+}
+
+/** Explain how a path is treated by both the bash sandbox and the tool policy. */
+export function explainPath(input: {
+	path: string;
+	cwd: string;
+	config: ResolvedSandboxConfig;
+}): PathExplanation {
+	const { path, cwd, config } = input;
+	const target = normalizeTarget(path, cwd);
+	const denyReadRules = config.rules.denyRead.filter((rule) => targetMatchesDenyRule(target, rule, cwd));
+	const denyWriteRules = config.rules.denyWrite.filter((rule) => targetMatchesDenyRule(target, rule, cwd));
+	const allowWriteRules = config.rules.allowWrite.filter((rule) => targetWithinRule(target, rule, cwd));
+
+	return {
+		target,
+		read: evaluateToolCall({ toolName: "read", path, cwd, config }),
+		write: evaluateToolCall({ toolName: "write", path, cwd, config }),
+		denyReadRules,
+		denyWriteRules,
+		allowWriteRules,
+		bashReadHidden: denyReadRules.length > 0,
+		bashWriteBlocked: denyReadRules.length > 0 || denyWriteRules.length > 0 || allowWriteRules.length === 0,
+	};
+}

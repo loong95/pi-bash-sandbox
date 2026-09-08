@@ -3,6 +3,7 @@
  * unit tested without a running pi session.
  */
 
+import type { PathExplanation } from "./policy.ts";
 import type { ProjectInfo } from "./project.ts";
 import type { BwrapCapabilities, ResolvedPath, ResolvedSandboxConfig } from "./types.ts";
 
@@ -53,6 +54,38 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 		lines.push("warnings:");
 		for (const warning of config.sources.warnings) lines.push(`  - ${warning}`);
 	}
+
+	return lines.join("\n");
+}
+
+/** POSIX single-quote an argument when it is not obviously safe. */
+export function shellQuote(argument: string): string {
+	if (argument.length > 0 && /^[A-Za-z0-9_./:=@%+,-]+$/.test(argument)) return argument;
+	return `'${argument.replace(/'/g, "'\\''")}'`;
+}
+
+/** Render an argv as a copy-pasteable shell command. */
+export function formatArgv(argv: string[]): string {
+	return argv.map(shellQuote).join(" ");
+}
+
+/** Render a `/sandbox-why` explanation. */
+export function formatPathExplanation(explanation: PathExplanation): string {
+	const lines: string[] = [`path: ${explanation.target}`];
+	const decision = (label: string, value: { block: boolean; reason?: string }) =>
+		`  ${label}: ${value.block ? `BLOCKED \u2014 ${value.reason}` : "allowed"}`;
+
+	lines.push(decision("read ", explanation.read));
+	lines.push(decision("write", explanation.write));
+	lines.push(
+		`  bash : ${explanation.bashReadHidden ? "read hidden" : "readable"}, ${
+			explanation.bashWriteBlocked ? "write blocked" : "writable"
+		}`,
+	);
+	if (explanation.denyReadRules.length > 0) lines.push(`  denyRead  \u2190 ${explanation.denyReadRules.join(", ")}`);
+	if (explanation.denyWriteRules.length > 0) lines.push(`  denyWrite \u2190 ${explanation.denyWriteRules.join(", ")}`);
+	if (explanation.allowWriteRules.length > 0)
+		lines.push(`  allowWrite \u2190 ${explanation.allowWriteRules.join(", ")}`);
 
 	return lines.join("\n");
 }

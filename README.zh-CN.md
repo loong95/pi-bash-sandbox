@@ -124,6 +124,9 @@ SandboxedBashOperations
 全局规则；`env.set` 按键合并。linked worktree 优先用自己那份 `.pi/sandbox.json`，
 没有则回退到主 checkout 的。
 
+`enabled` 同样遵循这套分层：写在全局就是所有项目的默认开关，写在项目里就只覆盖该项目。
+`/sandbox-enable` 和 `/sandbox-disable` 会帮你写入。
+
 ### 字段
 
 | 字段 | 类型 | 默认值 | 含义 |
@@ -160,8 +163,13 @@ SandboxedBashOperations
 | 命令 | 说明 |
 |---|---|
 | `/sandbox` | 展示解析后的配置、配置来源、bwrap 状态 |
+| `/sandbox-test <command>` | 干跑：打印实际 bwrap argv，不执行 |
+| `/sandbox-why <path>` | 解释某路径如何被处理（命中哪些规则、bash vs 工具策略） |
+| `/sandbox-init` | 在当前项目生成 `.pi/sandbox.json` 模板 |
+| `/sandbox-enable [project\|global]` | 写入 `enabled: true`（默认作用域：项目） |
+| `/sandbox-disable [project\|global]` | 写入 `enabled: false`（默认作用域：项目） |
 | `/sandbox-reload` | 清空所有缓存（配置、探测、项目、设置） |
-| `--no-sandbox` | 同时关闭 bash 沙箱和工具策略 |
+| `--no-sandbox` | 本次会话同时关闭 bash 沙箱和工具策略 |
 
 ## 安全模型与限制
 
@@ -200,6 +208,7 @@ pnpm run all     # check + test
 | `src/probe.ts` | bwrap 可用性与能力探测 |
 | `src/exec.ts` | `SandboxedBashOperations` |
 | `src/policy.ts` | 内置文件工具的 `tool_call` 策略 |
+| `src/config-write.ts` | `/sandbox-init` 与 enable/disable 的配置写入 |
 | `src/settings.ts` | 从 pi 设置读取 `shellCommandPrefix` / `shellPath` |
 | `src/ui.ts` | `/sandbox` 输出 |
 

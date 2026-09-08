@@ -2,8 +2,9 @@
  * pi-bash-sandbox extension entry point.
  *
  * Overrides the built-in `bash` tool with a bubblewrap-sandboxed
- * implementation (decision D2), routes `!` / `!!` user bash through the same
- * operations, and adds `/sandbox` + `/sandbox-reload` commands.
+ * implementation, routes `!` / `!!` user bash through the same operations,
+ * gates the built-in file tools via `tool_call`, and registers the
+ * `/sandbox*` commands.
  */
 
 import {
@@ -11,15 +12,24 @@ import {
 	createLocalBashOperations,
 	getShellConfig,
 	type ExtensionAPI,
+	type ExtensionCommandContext,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { buildBwrapArgs } from "./src/bwrap.ts";
 import { clearConfigCache, loadSandboxConfig, resolveAgentDir } from "./src/config.ts";
+import {
+	configPathForScope,
+	type ConfigScope,
+	setConfigEnabled,
+	writeConfigTemplate,
+} from "./src/config-write.ts";
+import { resolveSandboxEnv } from "./src/env.ts";
 import { createSandboxedBashOperations } from "./src/exec.ts";
-import { evaluateToolCall, POLICY_TOOLS } from "./src/policy.ts";
+import { evaluateToolCall, explainPath, POLICY_TOOLS } from "./src/policy.ts";
 import { clearProbeCache, probeBwrap } from "./src/probe.ts";
 import { clearProjectCache, resolveProjectRoot } from "./src/project.ts";
 import { clearShellSettingsCache, resolveShellSettings } from "./src/settings.ts";
-import { formatSandboxStatus } from "./src/ui.ts";
+import { formatArgv, formatPathExplanation, formatSandboxStatus } from "./src/ui.ts";
 
 export default function piBashSandbox(pi: ExtensionAPI): void {
 	pi.registerFlag("no-sandbox", {
@@ -108,25 +118,58 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 		return undefined;
 	});
 
+	async function configForContext(ctx: ExtensionContext) {
+		const cwd = ctx.cwd;
+		const project = await resolveProjectRoot(cwd);
+		const config = loadSandboxConfig({
+			projectRoot: project.projectRoot,
+			worktreeRoot: project.worktreeRoot,
+			cwd,
+			projectTrusted: ctx.isProjectTrusted(),
+			agentDir: resolveAgentDir(),
+		});
+		return { cwd, project, config };
+	}
+
+	const scopeCompletions = (prefix: string) =>
+		["project", "global"]
+			.filter((scope) => scope.startsWith(prefix))
+			.map((scope) => ({ value: scope, label: scope }));
+
+	function setEnabledHandler(enabled: boolean) {
+		return async (args: string, ctx: ExtensionCommandContext) => {
+			const scopeArg = args.trim().toLowerCase();
+			if (scopeArg && scopeArg !== "global" && scopeArg !== "project") {
+				ctx.ui.notify("Scope must be 'project' or 'global'.", "warning");
+				return;
+			}
+			const scope: ConfigScope = scopeArg === "global" ? "global" : "project";
+			const project = await resolveProjectRoot(ctx.cwd);
+			const path = configPathForScope(scope, {
+				projectRoot: project.projectRoot,
+				worktreeRoot: project.worktreeRoot,
+				agentDir: resolveAgentDir(),
+			});
+			try {
+				setConfigEnabled(path, enabled);
+				clearConfigCache();
+				ctx.ui.notify(`Sandbox ${enabled ? "enabled" : "disabled"} (${scope}) \u2192 ${path}`, "info");
+			} catch (error) {
+				ctx.ui.notify((error as Error).message, "error");
+			}
+		};
+	}
+
 	pi.registerCommand("sandbox", {
 		description: "Show resolved sandbox configuration and bwrap status",
 		handler: async (_args, ctx) => {
-			const cwd = ctx.cwd;
-			const project = await resolveProjectRoot(cwd);
-			const config = loadSandboxConfig({
-				projectRoot: project.projectRoot,
-				worktreeRoot: project.worktreeRoot,
-				cwd,
-				projectTrusted: ctx.isProjectTrusted(),
-				agentDir: resolveAgentDir(),
-			});
-			const capabilities = probeBwrap();
+			const { project, config } = await configForContext(ctx);
 			ctx.ui.notify(
 				formatSandboxStatus({
 					enabled: !pi.getFlag("no-sandbox"),
 					project,
 					config,
-					capabilities,
+					capabilities: probeBwrap(),
 				}),
 				"info",
 			);
@@ -142,5 +185,81 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 			clearShellSettingsCache();
 			ctx.ui.notify("Sandbox caches cleared; config will be re-read on the next command.", "info");
 		},
+	});
+
+	pi.registerCommand("sandbox-test", {
+		description: "Dry-run: show the bwrap argv for a command without executing it",
+		handler: async (args, ctx) => {
+			const command = args.trim();
+			if (!command) {
+				ctx.ui.notify("Usage: /sandbox-test <command>", "warning");
+				return;
+			}
+			const { cwd, config } = await configForContext(ctx);
+			const capabilities = probeBwrap();
+			const shellSettings = resolveShellSettings(cwd, ctx.isProjectTrusted());
+			const shell = getShellConfig(shellSettings.shellPath);
+			const enabled = config.enabled && !pi.getFlag("no-sandbox");
+			const argv = buildBwrapArgs({
+				command,
+				cwd,
+				env: resolveSandboxEnv(process.env, config.env),
+				config,
+				capabilities,
+				shell,
+			});
+			ctx.ui.notify(
+				[
+					`sandbox: ${enabled ? "enabled" : "DISABLED (this command would run unsandboxed)"}`,
+					`bwrap: ${capabilities.available ? "available" : "UNAVAILABLE"}`,
+					formatArgv(argv),
+				].join("\n"),
+				"info",
+			);
+		},
+	});
+
+	pi.registerCommand("sandbox-why", {
+		description: "Explain how a path is treated by the sandbox policy",
+		handler: async (args, ctx) => {
+			const path = args.trim();
+			if (!path) {
+				ctx.ui.notify("Usage: /sandbox-why <path>", "warning");
+				return;
+			}
+			const { cwd, config } = await configForContext(ctx);
+			ctx.ui.notify(formatPathExplanation(explainPath({ path, cwd, config })), "info");
+		},
+	});
+
+	pi.registerCommand("sandbox-init", {
+		description: "Create a .pi/sandbox.json template in the current project",
+		handler: async (_args, ctx) => {
+			const project = await resolveProjectRoot(ctx.cwd);
+			const path = configPathForScope("project", {
+				projectRoot: project.projectRoot,
+				worktreeRoot: project.worktreeRoot,
+				agentDir: resolveAgentDir(),
+			});
+			try {
+				writeConfigTemplate(path);
+				clearConfigCache();
+				ctx.ui.notify(`Created ${path}`, "info");
+			} catch (error) {
+				ctx.ui.notify((error as Error).message, "warning");
+			}
+		},
+	});
+
+	pi.registerCommand("sandbox-enable", {
+		description: "Enable the sandbox in the project (or global) config",
+		getArgumentCompletions: scopeCompletions,
+		handler: setEnabledHandler(true),
+	});
+
+	pi.registerCommand("sandbox-disable", {
+		description: "Disable the sandbox in the project (or global) config",
+		getArgumentCompletions: scopeCompletions,
+		handler: setEnabledHandler(false),
 	});
 }

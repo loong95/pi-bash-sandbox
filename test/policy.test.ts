@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	evaluateToolCall,
+	explainPath,
 	globToPathRegex,
 	normalizeTarget,
 	targetMatchesDenyRule,
@@ -133,4 +134,32 @@ test("rule helpers: within vs deny semantics", () => {
 test("normalizeTarget resolves symlinked parents for new files", () => {
 	const target = normalizeTarget(join(PROJECT, "sub", "brand-new.txt"), PROJECT);
 	assert.equal(target, join(PROJECT, "sub", "brand-new.txt"));
+});
+
+test("explainPath names the matching rules for a denied path", () => {
+	const explanation = explainPath({ path: join(SECRET_DIR, "id_ed25519"), cwd: PROJECT, config: makeConfig() });
+	assert.equal(explanation.read.block, true);
+	assert.equal(explanation.write.block, true);
+	assert.deepEqual(explanation.denyReadRules, [SECRET_DIR]);
+	assert.equal(explanation.bashReadHidden, true);
+	assert.equal(explanation.bashWriteBlocked, true);
+});
+
+test("explainPath: writable project file", () => {
+	const explanation = explainPath({ path: join(PROJECT, "sub", "a.txt"), cwd: PROJECT, config: makeConfig() });
+	assert.equal(explanation.read.block, false);
+	assert.equal(explanation.write.block, false);
+	assert.ok(explanation.allowWriteRules.includes(PROJECT));
+	assert.equal(explanation.bashReadHidden, false);
+	assert.equal(explanation.bashWriteBlocked, false);
+});
+
+test("explainPath: file outside allowWrite", () => {
+	const config = makeConfig({
+		rules: { allowWrite: [PROJECT], denyWrite: [".env"], denyRead: [SECRET_DIR] },
+	});
+	const explanation = explainPath({ path: join(HOME, "outside.txt"), cwd: PROJECT, config });
+	assert.equal(explanation.write.block, true);
+	assert.equal(explanation.bashWriteBlocked, true);
+	assert.deepEqual(explanation.allowWriteRules, []);
 });

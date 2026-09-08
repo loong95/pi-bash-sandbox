@@ -133,6 +133,10 @@ rather than concatenate, so a project can drop a global rule. `env.set` merges
 per key. For linked worktrees, the worktree's own `.pi/sandbox.json` is used when
 present, otherwise the main checkout's.
 
+`enabled` follows the same layering: set it globally to change the default for
+every project, or in a project config to override just that project.
+`/sandbox-enable` and `/sandbox-disable` write it for you.
+
 ### Schema
 
 | Field | Type | Default | Meaning |
@@ -172,8 +176,13 @@ deny lists.
 | Command | Description |
 |---|---|
 | `/sandbox` | Show the resolved config, config sources, and bwrap status |
+| `/sandbox-test <command>` | Dry-run: print the exact bwrap argv without executing |
+| `/sandbox-why <path>` | Explain how a path is treated (which rules match, bash vs tool policy) |
+| `/sandbox-init` | Create a `.pi/sandbox.json` template in the current project |
+| `/sandbox-enable [project\|global]` | Write `enabled: true` (default scope: project) |
+| `/sandbox-disable [project\|global]` | Write `enabled: false` (default scope: project) |
 | `/sandbox-reload` | Clear all caches (config, probe, project, settings) |
-| `--no-sandbox` | Disable both the bash sandbox and the tool policy |
+| `--no-sandbox` | Disable both the bash sandbox and the tool policy for this session |
 
 ## Security model and limitations
 
@@ -215,6 +224,7 @@ pnpm run all     # check + test
 | `src/probe.ts` | bwrap availability and capability detection |
 | `src/exec.ts` | `SandboxedBashOperations` |
 | `src/policy.ts` | `tool_call` policy for the built-in file tools |
+| `src/config-write.ts` | Config writes for `/sandbox-init` and enable/disable |
 | `src/settings.ts` | Reads `shellCommandPrefix` / `shellPath` from pi settings |
 | `src/ui.ts` | `/sandbox` output |
 

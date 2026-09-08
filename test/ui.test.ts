@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectInfo } from "../src/project.ts";
 import type { BwrapCapabilities, ResolvedSandboxConfig } from "../src/types.ts";
-import { formatSandboxStatus } from "../src/ui.ts";
+import { formatArgv, formatPathExplanation, formatSandboxStatus, shellQuote } from "../src/ui.ts";
 
 const PROJECT: ProjectInfo = {
 	cwd: "/repo/wt",
@@ -67,4 +67,29 @@ test("formatSandboxStatus surfaces extraBwrapArgs as risky", () => {
 		capabilities: CAPS,
 	});
 	assert.match(text, /extraBwrapArgs \(RISK/);
+});
+
+test("shellQuote and formatArgv", () => {
+	assert.equal(shellQuote("/bin/bash"), "/bin/bash");
+	assert.equal(shellQuote("echo hi"), "'echo hi'");
+	assert.equal(shellQuote("it's"), "'it'\\''s'");
+	assert.equal(formatArgv(["bwrap", "--setenv", "K", "a b"]), "bwrap --setenv K 'a b'");
+});
+
+test("formatPathExplanation renders decisions and matched rules", () => {
+	const text = formatPathExplanation({
+		target: "/home/u/.ssh/id_ed25519",
+		read: { block: true, reason: 'read blocked: "x" matches denyRead' },
+		write: { block: true, reason: 'write blocked: "x" matches denyRead' },
+		denyReadRules: ["~/.ssh"],
+		denyWriteRules: [],
+		allowWriteRules: [],
+		bashReadHidden: true,
+		bashWriteBlocked: true,
+	});
+	assert.match(text, /path: \/home\/u\/\.ssh\/id_ed25519/);
+	assert.match(text, /read : BLOCKED/);
+	assert.match(text, /write: BLOCKED/);
+	assert.match(text, /bash : read hidden, write blocked/);
+	assert.match(text, /denyRead\s+\u2190 ~\/\.ssh/);
 });

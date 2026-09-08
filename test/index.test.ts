@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -46,20 +46,33 @@ function mockCtx(cwd: string, notifications: string[]) {
 	};
 }
 
+function bareProject(): string {
+	return realpathSync(mkdtempSync(join(tmpdir(), "pibs-wire-")));
+}
+
 function projectWithConfig(config: unknown): string {
-	const project = realpathSync(mkdtempSync(join(tmpdir(), "pibs-wire-")));
+	const project = bareProject();
 	mkdirSync(join(project, ".pi"), { recursive: true });
 	writeFileSync(join(project, ".pi", "sandbox.json"), JSON.stringify(config));
 	return project;
 }
 
-test("extension registers the bash override, user_bash, and commands", () => {
+test("extension registers the bash override, user_bash, and all commands", () => {
 	const { api, flags, commands, tools, getHandler } = mockPi();
 	piBashSandbox(api);
 	assert.ok(flags.has("no-sandbox"));
 	assert.equal(tools.has("bash"), true);
-	assert.ok(commands.has("sandbox"));
-	assert.ok(commands.has("sandbox-reload"));
+	for (const name of [
+		"sandbox",
+		"sandbox-reload",
+		"sandbox-test",
+		"sandbox-why",
+		"sandbox-init",
+		"sandbox-enable",
+		"sandbox-disable",
+	]) {
+		assert.ok(commands.has(name), `missing /${name}`);
+	}
 	assert.ok(getHandler("user_bash"));
 	assert.ok(getHandler("tool_call"));
 });
@@ -152,4 +165,69 @@ test("tool_call blocks writes outside allowWrite", { skip }, async () => {
 	)) as { block?: boolean; reason?: string };
 	assert.equal(blocked.block, true);
 	assert.match(blocked.reason ?? "", /outside allowWrite/);
+});
+
+test("/sandbox-disable project writes enabled:false", { skip }, async () => {
+	const project = projectWithConfig({ enabled: true });
+	const notifications: string[] = [];
+	const { api, commands } = mockPi();
+	piBashSandbox(api);
+
+	await commands.get("sandbox-disable")?.handler("project", mockCtx(project, notifications));
+	const written = JSON.parse(readFileSync(join(project, ".pi", "sandbox.json"), "utf-8"));
+	assert.equal(written.enabled, false);
+	assert.match(notifications[0], /disabled \(project\)/);
+});
+
+test("/sandbox-enable global writes to the agent dir", { skip }, async () => {
+	const project = projectWithConfig({ enabled: false });
+	const agentDir = join(project, "agent");
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const { api, commands } = mockPi();
+		piBashSandbox(api);
+		await commands.get("sandbox-enable")?.handler("global", mockCtx(project, []));
+		const written = JSON.parse(readFileSync(join(agentDir, "sandbox.json"), "utf-8"));
+		assert.equal(written.enabled, true);
+	} finally {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+	}
+});
+
+test("/sandbox-init creates a project config", { skip }, async () => {
+	const project = bareProject();
+	const notifications: string[] = [];
+	const { api, commands } = mockPi();
+	piBashSandbox(api);
+
+	await commands.get("sandbox-init")?.handler("", mockCtx(project, notifications));
+	assert.ok(existsSync(join(project, ".pi", "sandbox.json")));
+	assert.match(notifications[0], /Created/);
+});
+
+test("/sandbox-test prints the bwrap argv without executing", { skip }, async () => {
+	const project = projectWithConfig({ network: "none" });
+	const notifications: string[] = [];
+	const { api, commands } = mockPi();
+	piBashSandbox(api);
+
+	await commands.get("sandbox-test")?.handler("echo hi", mockCtx(project, notifications));
+	assert.match(notifications[0], /sandbox: enabled/);
+	assert.match(notifications[0], /--unshare-net/);
+	assert.match(notifications[0], /--clearenv/);
+	assert.match(notifications[0], /echo hi/);
+});
+
+test("/sandbox-why explains a blocked path", { skip }, async () => {
+	const project = projectWithConfig({ filesystem: { denyRead: ["secret.txt"] } });
+	writeFileSync(join(project, "secret.txt"), "TOPSECRET");
+	const notifications: string[] = [];
+	const { api, commands } = mockPi();
+	piBashSandbox(api);
+
+	await commands.get("sandbox-why")?.handler("secret.txt", mockCtx(project, notifications));
+	assert.match(notifications[0], /read : BLOCKED/);
+	assert.match(notifications[0], /denyRead/);
 });
