@@ -3,6 +3,8 @@
 OS-level sandboxing for [pi](https://pi.dev/)'s `bash` tool, using
 [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`).
 
+> [简体中文](README.zh-CN.md)
+
 - **Per-project, stateless.** Every command resolves its own policy and spawns a
   fresh `bwrap`. No long-lived sandbox process, no global singletons.
 - **Filesystem, network, and environment control** via a user-editable
@@ -215,7 +217,6 @@ pnpm run all     # check + test
 | `src/policy.ts` | `tool_call` policy for the built-in file tools |
 | `src/settings.ts` | Reads `shellCommandPrefix` / `shellPath` from pi settings |
 | `src/ui.ts` | `/sandbox` output |
-| `DESIGN.md` | Design document and decisions |
 
 Integration tests exercise real `bwrap` and skip automatically when it is not
 available, so the suite stays green on machines without it.
