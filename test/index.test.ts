@@ -116,6 +116,29 @@ test("tool_call blocks read/write to denyRead paths", { skip }, async () => {
 	assert.equal(allowed, undefined);
 });
 
+test("tool_call blocks read-only tools (grep/find/ls) on denyRead paths, defaults to cwd", { skip }, async () => {
+	const project = projectWithConfig({ filesystem: { denyRead: ["secret"] } });
+	mkdirSync(join(project, "secret"), { recursive: true });
+	writeFileSync(join(project, "secret", "token.txt"), "TOPSECRET");
+	const { api, getHandler } = mockPi();
+	piBashSandbox(api);
+	const handler = getHandler("tool_call");
+	assert.ok(handler);
+
+	for (const toolName of ["read", "grep", "find", "ls"]) {
+		const blocked = (await handler(
+			{ toolName, input: { path: "secret" } },
+			mockCtx(project, []),
+		)) as { block?: boolean; reason?: string };
+		assert.equal(blocked.block, true, `${toolName} should be blocked`);
+		assert.match(blocked.reason ?? "", /denyRead/);
+	}
+
+	// Omitted path defaults to cwd, which is not denied.
+	const allowed = await handler({ toolName: "ls", input: {} }, mockCtx(project, []));
+	assert.equal(allowed, undefined);
+});
+
 test("tool_call blocks writes outside allowWrite", { skip }, async () => {
 	const project = projectWithConfig({ filesystem: { allowWrite: ["."] } });
 	const { api, getHandler } = mockPi();

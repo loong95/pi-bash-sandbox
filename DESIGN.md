@@ -40,7 +40,7 @@ pi 的内置 `bash` 工具直接在宿主上执行命令。我们要提供一个
 ### 非目标（第一阶段）
 
 - 域名级网络白名单（只支持全开 / 全断）。
-- 隔离 `read` / `write` / `edit` / 网页终端（它们不在 bwrap 内）。
+- 隔离 `read` / `write` / `edit` / `grep` / `find` / `ls` 的 OS 级访问（它们不在 bwrap 内；只用 `tool_call` 策略拦截）。
 - Windows / macOS 的 OS 级隔离（Linux 优先，其他平台回退或禁用）。
 - 交互式 TTY 命令（vim、htop 等）。
 
@@ -525,7 +525,7 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 | 限制 | 说明 | 缓解 |
 |---|---|---|
 | 项目间可读 | `--ro-bind / /` 默认能读全盘 | 显式 `denyRead` 兄弟项目；或改最小 root |
-| read/write/edit 不在 bwrap 内 | 它们由 `tool_call` 策略拦截（同一套 denyRead/denyWrite/allowWrite 规则） | 已实现 `policy.ts`；grep/find/ls、网页终端仍不拦截 |
+| read/write/edit/grep/find/ls 不在 bwrap 内 | 由 `tool_call` 策略拦截（同一套 denyRead/denyWrite/allowWrite 规则） | 已实现 `policy.ts`；pi-web 网页终端/文件浏览器仍不拦截 |
 | 网络全开风险 | `host` 模式下命令可外联并读取沙箱内可见的密钥 | 默认 `none`；`--clearenv` 默认清洗密钥 |
 | env 泄密 | pi 进程 env 含 API key | 默认白名单 + deny 规则 |
 | 非特权 userns 限制 | Ubuntu 24.04 AppArmor、无 CAP_SYS_ADMIN 容器 | 启动自检 + `weakerNestedSandbox` 降级 |
@@ -586,7 +586,7 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 
 ### 阶段 1.5：read/write/edit 策略拦截 ✅ 已完成
 
-- `policy.ts` + `tool_call` 钩子：`read` 受 denyRead 限制；`write`/`edit` 受 denyRead/denyWrite 限制，且默认必须在 allowWrite 内。
+- `policy.ts` + `tool_call` 钩子：`read`/`grep`/`find`/`ls` 受 denyRead 限制（`path` 缺省时按 cwd）；`write`/`edit` 受 denyRead/denyWrite 限制，且默认必须在 allowWrite 内。
 - 规则按原始字符串匹配，所以 `.env.*` / `*.pem` 对**尚不存在**的文件也生效（bwrap 只能 bind 已存在的路径）。
 - 新增 `tools.enabled` / `tools.requireAllowWrite` 配置项。
 - 76 个测试全绿。

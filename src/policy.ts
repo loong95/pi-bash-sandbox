@@ -4,7 +4,8 @@
  * bubblewrap only wraps `bash`. The built-in `read`, `write`, and `edit`
  * tools run directly on the host, so they are gated here via the `tool_call`
  * hook using the same rules as the bash sandbox:
- * - `read` is blocked when the target matches a denyRead rule
+ * - `read` / `grep` / `find` / `ls` are blocked when the target matches a
+ *   denyRead rule
  * - `write` / `edit` are blocked on denyRead or denyWrite, and (by default)
  *   when the target is outside every allowWrite rule
  *
@@ -94,17 +95,29 @@ export interface ToolCallPolicyDecision {
 	reason?: string;
 }
 
+/** Built-in read-only tools that can reach denyRead paths via their `path` argument. */
+export const READ_ONLY_POLICY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
+/** Built-in mutating tools. */
+export const WRITE_POLICY_TOOLS = new Set(["write", "edit"]);
+
+/** Every tool the policy intercepts. */
+export const POLICY_TOOLS = new Set([...READ_ONLY_POLICY_TOOLS, ...WRITE_POLICY_TOOLS]);
+
 export function evaluateToolCall(input: ToolCallPolicyInput): ToolCallPolicyDecision {
 	const { toolName, path, cwd, config } = input;
 	if (!config.tools.enabled) return { block: false };
-	if (toolName !== "read" && toolName !== "write" && toolName !== "edit") return { block: false };
+
+	const isReadOnly = READ_ONLY_POLICY_TOOLS.has(toolName);
+	const isWrite = WRITE_POLICY_TOOLS.has(toolName);
+	if (!isReadOnly && !isWrite) return { block: false };
 
 	const target = normalizeTarget(path, cwd);
 	const matchesDenyRead = config.rules.denyRead.some((rule) => targetMatchesDenyRule(target, rule, cwd));
 	const matchesDenyWrite = config.rules.denyWrite.some((rule) => targetMatchesDenyRule(target, rule, cwd));
 
-	if (toolName === "read") {
-		if (matchesDenyRead) return { block: true, reason: `read blocked: "${path}" matches denyRead` };
+	if (isReadOnly) {
+		if (matchesDenyRead) return { block: true, reason: `${toolName} blocked: "${path}" matches denyRead` };
 		return { block: false };
 	}
 

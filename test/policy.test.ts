@@ -104,9 +104,16 @@ test("tools.enabled=false disables all interception", () => {
 	assert.equal(decide("write", join(SECRET_DIR, "x"), config).block, false);
 });
 
-test("non file tools are ignored", () => {
+test("read-only tools (grep/find/ls) are blocked on denyRead paths", () => {
+	for (const toolName of ["grep", "find", "ls"]) {
+		assert.equal(decide(toolName, SECRET_DIR).block, true, `${toolName} on secret dir`);
+		assert.equal(decide(toolName, join(SECRET_DIR, "id_ed25519")).block, true, `${toolName} on secret file`);
+		assert.equal(decide(toolName, join(PROJECT, "sub")).block, false, `${toolName} on project`);
+	}
+});
+
+test("non-policy tools are ignored", () => {
 	assert.equal(decide("bash", join(SECRET_DIR, "id_ed25519")).block, false);
-	assert.equal(decide("grep", join(SECRET_DIR, "id_ed25519")).block, false);
 });
 
 test("globToPathRegex: * does not cross separators, ** does", () => {

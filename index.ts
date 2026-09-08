@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { clearConfigCache, loadSandboxConfig, resolveAgentDir } from "./src/config.ts";
 import { createSandboxedBashOperations } from "./src/exec.ts";
-import { evaluateToolCall } from "./src/policy.ts";
+import { evaluateToolCall, POLICY_TOOLS } from "./src/policy.ts";
 import { clearProbeCache, probeBwrap } from "./src/probe.ts";
 import { clearProjectCache, resolveProjectRoot } from "./src/project.ts";
 import { formatSandboxStatus } from "./src/ui.ts";
@@ -71,14 +71,15 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 		return { operations: makeOperations(ctx.isProjectTrusted(), ctx) };
 	});
 
-	// Gate the built-in read/write/edit tools, which do NOT run inside bwrap.
+	// Gate the built-in file tools, which do NOT run inside bwrap. Read-only
+	// tools default to cwd when `path` is omitted.
 	pi.on("tool_call", async (event, ctx) => {
 		if (pi.getFlag("no-sandbox")) return undefined;
-		if (event.toolName !== "read" && event.toolName !== "write" && event.toolName !== "edit") {
-			return undefined;
-		}
-		const path = event.input.path;
-		if (typeof path !== "string") return undefined;
+		if (!POLICY_TOOLS.has(event.toolName)) return undefined;
+
+		const input = event.input as { path?: unknown };
+		const path =
+			typeof input.path === "string" && input.path.length > 0 ? input.path : ctx.cwd;
 
 		const cwd = ctx.cwd;
 		const project = await resolveProjectRoot(cwd);
