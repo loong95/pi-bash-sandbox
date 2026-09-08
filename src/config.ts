@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG: SandboxConfigFile = {
 	},
 	tmp: "private",
 	env: {
-		passthrough: ["PATH", "HOME", "TERM", "LANG", "LC_*", "TMPDIR"],
+		passthrough: ["PATH", "HOME", "TERM", "LANG", "LC_*", "TMPDIR", "PI_*"],
 		deny: ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "ANTHROPIC_*", "OPENAI_*"],
 		set: {},
 	},

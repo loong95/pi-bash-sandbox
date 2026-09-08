@@ -164,10 +164,10 @@ pi-bash-sandbox/
     project.ts             # cwd → projectRoot / worktree 解析
     bwrap.ts               # buildBwrapArgs 纯函数
     env.ts                 # env 白名单/deny 匹配与 resolveSandboxEnv
-    exec.ts                # createSandboxedBashOperations (BashOperations)   [阶段 1]
-    probe.ts               # bwrap 可用性与能力探测                         [阶段 1]
-    policy.ts              # allow/deny 匹配（供 tool_call 策略复用）          [阶段 1]
-    ui.ts                  # /sandbox 输出、可选权限提示                      [阶段 1]
+    exec.ts                # createSandboxedBashOperations (BashOperations)   ✅
+    probe.ts               # bwrap 可用性与能力探测                          ✅
+    ui.ts                  # /sandbox 输出                                  ✅
+    policy.ts              # allow/deny 匹配（供 tool_call 策略复用）          [未实现]
   test/
     bwrap.test.ts          # 纯函数 golden 测试
     config.test.ts
@@ -567,18 +567,17 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 - 40 个测试全绿（纯函数 + 真实 bwrap 集成），`tsc --noEmit` 通过。
 - 已修正：`denyWrite` 用只读自重绑；`--tmpfs /tmp` 在 `allowWrite` 之前；env 过滤基于 pi 传入的 env。
 
-### 阶段 1：可用 bash 沙箱
+### 阶段 1：可用 bash 沙箱 ✅ 已完成
 
-- `probe.ts` + `exec.ts` + `index.ts`。
-- 覆盖 `bash`、`user_bash`。
-- `network: none/host`，`--clearenv` 环境白名单。
-- `--no-sandbox` 逃生口、`/sandbox` 命令。
-- 集成测试。
+- `probe.ts` + `exec.ts` + `ui.ts` + `index.ts`。
+- 覆盖 `bash`、`user_bash`；`--no-sandbox` 逃生口；`/sandbox` + `/sandbox-reload`。
+- `network: none/host`，`--clearenv` 环境白名单（默认透传 `PI_*`）。
+- 项目信任取自 `ctx.isProjectTrusted()`；禁用/回退时委托 `createLocalBashOperations`。
+- 60 个测试全绿，含真实 bwrap 的流式/timeout/abort 与扩展装配（mock `ExtensionAPI`）测试。
 
 ### 阶段 2：per-project / worktree 与 pi-web
 
 - 按 `projectRoot` 解析配置与 worktree 写范围。
-- 项目信任门禁。
 - pi-web：复用 project-command env，改用 `ctx.cwd`。
 - `/sandbox-reload` 热加载。
 

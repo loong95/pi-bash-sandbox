@@ -13,6 +13,7 @@ import test from "node:test";
 import { buildBwrapArgs } from "../src/bwrap.ts";
 import { loadSandboxConfig } from "../src/config.ts";
 import { resolveSandboxEnv } from "../src/env.ts";
+import { createSandboxedBashOperations } from "../src/exec.ts";
 import type { BwrapCapabilities } from "../src/types.ts";
 
 const BWRAP = process.env.BWRAP ?? "bwrap";
@@ -151,4 +152,56 @@ test("clearenv: host secrets are absent, PATH survives", { skip }, () => {
 	const result = run(args);
 	assert.match(result.stdout, /CLEAN/);
 	assert.match(result.stdout, /HAS_PATH/);
+});
+
+// ---------------------------------------------------------------------------
+// SandboxedBashOperations against real bwrap
+// ---------------------------------------------------------------------------
+
+function realOperations(project: string, config: unknown) {
+	writeFileSync(join(project, ".pi", "sandbox.json"), JSON.stringify(config));
+	return createSandboxedBashOperations({
+		resolveConfig: async (cwd) =>
+			loadSandboxConfig({
+				projectRoot: cwd,
+				worktreeRoot: cwd,
+				cwd,
+				projectTrusted: true,
+				agentDir: join(project, "agent"),
+			}),
+		capabilities: () => CAPS,
+		shell: () => ({ shell: "/bin/bash", args: ["-c"] }),
+		fallback: {
+			async exec() {
+				return { exitCode: 0 };
+			},
+		},
+	});
+}
+
+test("exec streams stdout", { skip }, async () => {
+	const project = tempProject();
+	const operations = realOperations(project, {});
+	const chunks: Buffer[] = [];
+	const result = await operations.exec("echo streamed", project, { onData: (data) => chunks.push(data) });
+	assert.equal(result.exitCode, 0);
+	assert.match(Buffer.concat(chunks).toString(), /streamed/);
+});
+
+test("exec timeout kills the process group", { skip }, async () => {
+	const project = tempProject();
+	const operations = realOperations(project, {});
+	await assert.rejects(
+		operations.exec("sleep 30", project, { onData: () => {}, timeout: 1 }),
+		/timeout:1/,
+	);
+});
+
+test("exec abort kills the process group", { skip }, async () => {
+	const project = tempProject();
+	const operations = realOperations(project, {});
+	const controller = new AbortController();
+	const promise = operations.exec("sleep 30", project, { onData: () => {}, signal: controller.signal });
+	setTimeout(() => controller.abort(), 200);
+	await assert.rejects(promise, /aborted/);
 });
