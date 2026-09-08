@@ -164,6 +164,7 @@ pi-bash-sandbox/
     project.ts             # cwd → projectRoot / worktree 解析
     bwrap.ts               # buildBwrapArgs 纯函数
     env.ts                 # env 白名单/deny 匹配与 resolveSandboxEnv
+    settings.ts            # 读回 shellCommandPrefix / shellPath                 ✅
     exec.ts                # createSandboxedBashOperations (BashOperations)   ✅
     probe.ts               # bwrap 可用性与能力探测                          ✅
     ui.ts                  # /sandbox 输出                                  ✅
@@ -499,13 +500,13 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 扩展发现与 CLI 相同，且实现了完整的扩展 UI 协议（含 `ctx.ui.custom()`）。
 因此无状态 bash 工具在 pi-web 中可直接工作。需要注意：
 
-1. **project-command 环境**：pi-web 内置 `pi-web-project-command-environment` 扩展，负责
-   - 应用 `shellCommandPrefix`
-   - 把 `~/.pi/agent/bin` 加入 PATH
-   - 清洗 `NEXT_*` / `PORT` / `NODE_ENV`
-
-   覆盖 `bash` 后这些会丢失。实现里必须复用 `createProjectCommandBashOperations`
-   （或等价的 env 处理），否则沙箱版 bash 在 pi-web 中行为退化。
+1. **project-command 环境**：pi-web 内置 `pi-web-project-command-environment` 扩展也会覆盖 `bash`。
+   但它的 `preferUserBashExtension()` 在发现用户扩展已注册 `bash` 时**主动移除自己**，
+   所以我们的实现优先，不会被它覆盖。它原本负责的三件事：
+   - 把 `~/.pi/agent/bin` 加入 PATH —— pi 的 `getShellEnv()` 已经做了（传进 `exec` 的 env 里就有）。
+   - 清洗 `NEXT_*` / `PORT` / `NODE_ENV` —— 我们 `--clearenv` + 白名单天然丢弃。
+   - 应用 `shellCommandPrefix` / `shellPath` —— **这一项会丢**，因此 `src/settings.ts`
+     用 `SettingsManager.create()` 读回并传给 `createBashToolDefinition`。
 
 2. **不要用 `process.cwd()`**：pi-web server 的 cwd 不是 session cwd。配置解析和
    `SettingsManager` 都应基于 `ctx.cwd`。
@@ -591,11 +592,13 @@ pi-web 把 SDK 直接跑在 Next.js server 进程里（`lib/rpc-manager.ts:2000-
 - 新增 `tools.enabled` / `tools.requireAllowWrite` 配置项。
 - 76 个测试全绿。
 
-### 阶段 2：per-project / worktree 与 pi-web
+### 阶段 2：pi-web 兼容 ✅ 已完成（网页终端/文件浏览器不在范围）
 
-- 按 `projectRoot` 解析配置与 worktree 写范围。
-- pi-web：复用 project-command env，改用 `ctx.cwd`。
-- `/sandbox-reload` 热加载。
+- `src/settings.ts` 读回 `shellCommandPrefix` / `shellPath`，避免覆盖 `bash` 后丢失。
+- 其余 pi-web 环境（agent bin PATH、`NEXT_*`/`PORT`/`NODE_ENV` 清洗）已由 pi 管线与 `--clearenv` 覆盖。
+- pi-web 的 `preferUserBashExtension()` 保证用户 bash 覆盖优先。
+- 网页终端与文件浏览器明确不做限制（不在 pi 范围内）。
+- `/sandbox-reload` 同时清理 settings 缓存。
 
 ### 阶段 3（可选）：域名白名单
 

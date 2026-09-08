@@ -18,6 +18,7 @@ import { createSandboxedBashOperations } from "./src/exec.ts";
 import { evaluateToolCall, POLICY_TOOLS } from "./src/policy.ts";
 import { clearProbeCache, probeBwrap } from "./src/probe.ts";
 import { clearProjectCache, resolveProjectRoot } from "./src/project.ts";
+import { clearShellSettingsCache, resolveShellSettings } from "./src/settings.ts";
 import { formatSandboxStatus } from "./src/ui.ts";
 
 export default function piBashSandbox(pi: ExtensionAPI): void {
@@ -29,7 +30,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 
 	const fallback = createLocalBashOperations();
 
-	function makeOperations(projectTrusted: boolean, ctx?: ExtensionContext) {
+	function makeOperations(projectTrusted: boolean, ctx?: ExtensionContext, shellPath?: string) {
 		return createSandboxedBashOperations({
 			resolveConfig: async (cwd) => {
 				const project = await resolveProjectRoot(cwd);
@@ -42,7 +43,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 				});
 			},
 			capabilities: () => probeBwrap(),
-			shell: () => getShellConfig(),
+			shell: () => getShellConfig(shellPath),
 			enabled: () => !pi.getFlag("no-sandbox"),
 			fallback,
 			onUnavailable: (reason, cwd) => {
@@ -60,15 +61,22 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const cwd = ctx?.cwd ?? process.cwd();
 			const trusted = ctx?.isProjectTrusted() ?? true;
-			const operations = makeOperations(trusted, ctx);
-			const sandboxed = createBashToolDefinition(cwd, { operations });
+			const shellSettings = resolveShellSettings(cwd, trusted);
+			const operations = makeOperations(trusted, ctx, shellSettings.shellPath);
+			const sandboxed = createBashToolDefinition(cwd, {
+				operations,
+				commandPrefix: shellSettings.commandPrefix,
+				shellPath: shellSettings.shellPath,
+			});
 			return sandboxed.execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 	});
 
-	// Route `!` / `!!` user commands through the sandbox too.
+	// Route `!` / `!!` user commands through the sandbox too. pi core already
+	// applies the shell command prefix on this path, so we only supply operations.
 	pi.on("user_bash", async (_event, ctx) => {
-		return { operations: makeOperations(ctx.isProjectTrusted(), ctx) };
+		const shellSettings = resolveShellSettings(ctx.cwd, ctx.isProjectTrusted());
+		return { operations: makeOperations(ctx.isProjectTrusted(), ctx, shellSettings.shellPath) };
 	});
 
 	// Gate the built-in file tools, which do NOT run inside bwrap. Read-only
@@ -131,6 +139,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 			clearConfigCache();
 			clearProbeCache();
 			clearProjectCache();
+			clearShellSettingsCache();
 			ctx.ui.notify("Sandbox caches cleared; config will be re-read on the next command.", "info");
 		},
 	});
