@@ -365,10 +365,24 @@ export interface LoadSandboxConfigInput {
 	agentDir?: string;
 }
 
-const cache = new Map<string, ResolvedSandboxConfig>();
+/**
+ * Cached per config-file stat: JSON parse + layer merge only. Path and glob
+ * expansion is deliberately NOT cached, so a file created after startup
+ * (e.g. a new `.env`) is protected on the very next command without needing
+ * `/sandbox-reload`.
+ */
+interface RawConfig {
+	merged: SandboxConfigFile;
+	globalPath: string;
+	projectPath: string | null;
+	projectTrusted: boolean;
+	warnings: string[];
+}
+
+const rawCache = new Map<string, RawConfig>();
 
 export function clearConfigCache(): void {
-	cache.clear();
+	rawCache.clear();
 }
 
 function statKey(path: string | null): string {
@@ -424,18 +438,17 @@ function normalize(
  * Load, merge, and expand config for one command. Results are cached by
  * config-file stat + cwd + trust, so repeated commands do not re-read disk.
  */
-export function loadSandboxConfig(input: LoadSandboxConfigInput): ResolvedSandboxConfig {
+function loadRawConfig(input: LoadSandboxConfigInput): RawConfig {
 	const { globalPath, projectPath } = getConfigPaths(input);
 	const key = [
 		globalPath,
 		statKey(globalPath),
 		projectPath ?? "none",
 		statKey(projectPath),
-		input.cwd,
 		String(input.projectTrusted),
 	].join("|");
 
-	const cached = cache.get(key);
+	const cached = rawCache.get(key);
 	if (cached) return cached;
 
 	const warnings: string[] = [];
@@ -449,18 +462,33 @@ export function loadSandboxConfig(input: LoadSandboxConfigInput): ResolvedSandbo
 		}
 	}
 
-	const merged = mergeConfigLayers(DEFAULT_CONFIG, globalLayer, projectLayer);
-	const resolved = normalize(merged, input.cwd, {
+	const raw: RawConfig = {
+		merged: mergeConfigLayers(DEFAULT_CONFIG, globalLayer, projectLayer),
 		globalPath,
 		projectPath,
 		projectTrusted: input.projectTrusted,
 		warnings,
-	});
+	};
 
-	cache.set(key, resolved);
-	if (cache.size > 64) {
-		const oldest = cache.keys().next().value;
-		if (oldest !== undefined) cache.delete(oldest);
+	rawCache.set(key, raw);
+	if (rawCache.size > 64) {
+		const oldest = rawCache.keys().next().value;
+		if (oldest !== undefined) rawCache.delete(oldest);
 	}
-	return resolved;
+	return raw;
+}
+
+/**
+ * Load, merge, and expand config for one command. Parsing/merging is cached
+ * by config-file stat; path and glob expansion runs every call so files
+ * created after startup are picked up immediately.
+ */
+export function loadSandboxConfig(input: LoadSandboxConfigInput): ResolvedSandboxConfig {
+	const raw = loadRawConfig(input);
+	return normalize(raw.merged, input.cwd, {
+		globalPath: raw.globalPath,
+		projectPath: raw.projectPath,
+		projectTrusted: raw.projectTrusted,
+		warnings: [...raw.warnings],
+	});
 }

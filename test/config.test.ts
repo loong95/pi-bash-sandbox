@@ -170,6 +170,36 @@ test("expands relative and glob rules against cwd", () => {
 	);
 });
 
+test("files created after first load are picked up without reload", () => {
+	clearConfigCache();
+	const root = tempDir();
+	const project = join(root, "proj");
+	mkdirSync(project, { recursive: true });
+	writeConfig(project, { filesystem: { denyWrite: [".env.*", "*.pem"] } });
+
+	const input = {
+		projectRoot: project,
+		worktreeRoot: project,
+		cwd: project,
+		projectTrusted: true,
+		agentDir: join(root, "agent"),
+	};
+
+	// Nothing matches yet.
+	assert.deepEqual(loadSandboxConfig(input).denyWrite, []);
+
+	// Files appear after the config was already parsed/merged and cached.
+	writeFileSync(join(project, ".env.local"), "secret");
+	writeFileSync(join(project, "key.pem"), "key");
+
+	assert.deepEqual(
+		loadSandboxConfig(input)
+			.denyWrite.map((path) => path.path)
+			.sort(),
+		[join(project, ".env.local"), join(project, "key.pem")].sort(),
+	);
+});
+
 test("nonexistent rules are skipped (no host mount point side effects)", () => {
 	clearConfigCache();
 	const root = tempDir();

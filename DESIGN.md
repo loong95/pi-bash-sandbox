@@ -267,7 +267,9 @@ export function loadSandboxConfig(input: {
 - 路径展开：`~` → 宿主 `HOME`；相对路径 → 相对 `cwd`；然后 `realpath`（解析 symlink）。
 - 过滤不存在路径：`--tmpfs` / `--ro-bind /dev/null` 对不存在路径会失败或在宿主创建挂载点。
   实现上直接跳过不存在的路径（无内容也就无需屏蔽）。
-- 缓存：按文件 `mtimeMs + size` 缓存解析结果，避免每条命令都读盘。
+- 缓存：按文件 `mtimeMs + size` 缓存**解析与合并**结果；路径/glob 展开**每条命令重新计算**，
+  因此启动后新建的 `.env` 下一条命令就生效，无需 `/sandbox-reload`。
+  （代价是每条命令几次 stat/readdir；含 `**` 的重型 glob 会每命令扫树，慎用。）
 - 解析失败：打印警告并回退到上一层配置（不要静默使用空策略）。
 
 ### 7.3 项目解析（`src/project.ts`）
