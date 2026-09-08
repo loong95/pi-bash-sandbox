@@ -65,8 +65,14 @@ export function buildBwrapArgs(input: BuildBwrapInput): string[] {
 
 	// denyRead wins over denyWrite when a path appears in both.
 	for (const path of config.denyRead) {
-		if (path.isDir) args.push("--tmpfs", path.path);
-		else args.push("--ro-bind", "/dev/null", path.path);
+		if (path.isDir) {
+			// Empty tmpfs hides contents; remount-ro makes writes fail loudly
+			// (EROFS) instead of silently vanishing into a throwaway directory.
+			args.push("--tmpfs", path.path);
+			args.push("--remount-ro", path.path);
+		} else {
+			args.push("--ro-bind", "/dev/null", path.path);
+		}
 	}
 
 	if (config.network === "none") args.push("--unshare-net");

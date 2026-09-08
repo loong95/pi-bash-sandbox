@@ -116,6 +116,22 @@ test("denyRead: file content is hidden", { skip }, () => {
 	assert.equal(result.stdout, "|done\n");
 });
 
+test("denyRead dir: contents hidden and writes fail loudly", { skip }, () => {
+	const project = tempProject();
+	mkdirSync(join(project, "secret"), { recursive: true });
+	writeFileSync(join(project, "secret", "token.txt"), "TOPSECRET");
+	const args = buildArgs(
+		project,
+		{ filesystem: { allowWrite: ["."], denyRead: ["secret"] } },
+		'ls -A secret; echo x > secret/hh; echo "write=$?"',
+	);
+	const result = run(args);
+	assert.equal(result.stdout.includes("TOPSECRET"), false);
+	assert.equal(result.stdout.includes("hh"), false);
+	assert.match(result.stdout, /write=1/);
+	assert.match(result.stderr, /Read-only file system/);
+});
+
 test("denyWrite: file stays readable but writes fail and host is unchanged", { skip }, () => {
 	const project = tempProject();
 	writeFileSync(join(project, "protected.txt"), "orig");

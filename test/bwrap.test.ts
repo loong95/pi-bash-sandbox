@@ -71,6 +71,8 @@ test("canonical argv: full golden", () => {
 		"/tmp/proj/.env",
 		"--tmpfs",
 		"/tmp/proj/secret",
+		"--remount-ro",
+		"/tmp/proj/secret",
 		"--ro-bind",
 		"/dev/null",
 		"/tmp/proj/key.txt",
@@ -109,7 +111,7 @@ test("denyWrite uses read-only self-bind, never /dev/null", () => {
 	assert.equal(args.includes("/dev/null"), false);
 });
 
-test("denyRead dir -> tmpfs, file -> /dev/null", () => {
+test("denyRead dir -> tmpfs + remount-ro, file -> /dev/null", () => {
 	const args = buildBwrapArgs({
 		command: "true",
 		cwd: "/p",
@@ -120,6 +122,12 @@ test("denyRead dir -> tmpfs, file -> /dev/null", () => {
 	});
 	const tmpfsSecret = args.findIndex((value, i) => value === "--tmpfs" && args[i + 1] === "/p/secret");
 	assert.ok(tmpfsSecret !== -1);
+	assert.deepEqual(args.slice(tmpfsSecret, tmpfsSecret + 4), [
+		"--tmpfs",
+		"/p/secret",
+		"--remount-ro",
+		"/p/secret",
+	]);
 	assert.deepEqual(args.slice(args.indexOf("/dev/null") - 1, args.indexOf("/dev/null") + 2), [
 		"--ro-bind",
 		"/dev/null",

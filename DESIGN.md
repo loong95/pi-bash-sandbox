@@ -312,6 +312,7 @@ bwrap
   --bind <allowWrite> <allowWrite>   # 逐个可写路径
   --ro-bind <denyWrite> <denyWrite>  # 只读自重绑：内容可读、写入失败
   --tmpfs <denyRead 目录>             # 屏蔽读目录（跳过不存在）
+  --remount-ro <denyRead 目录>        # 使该 tmpfs 只读，写入报 EROFS 而非静默消失
   --ro-bind /dev/null <denyRead 文件> # 屏蔽文件内容（跳过不存在）
   --unshare-net                      # network=none
   --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try
@@ -337,7 +338,9 @@ bwrap
 - `denyRead` / `denyWrite` 路径若不存在：跳过，避免 bwrap 在宿主创建挂载点文件。
 - `denyWrite` 用 `--ro-bind <realpath> <realpath>`（内容保留可读、写入报 `Read-only file system`），
   **不要**用 `--ro-bind /dev/null`（那会连读也一起屏蔽）。
-- `denyRead` 目录用 `--tmpfs`，文件用 `--ro-bind /dev/null`（内容变为空）。
+- `denyRead` 目录用 `--tmpfs` + `--remount-ro`：内容为空且**写入报 `Read-only file system`**。
+  只加 `--tmpfs` 的话目录可写，写入会静默消失（agent 会误以为写成功）。
+- `denyRead` 文件用 `--ro-bind /dev/null`（内容变为空）。
 - 文件 deny 的目标若是 symlink：解析到 realpath 再 bind（bwrap 不支持对 symlink 目标做文件 bind）。
 - 路径含 glob：第一阶段不支持，遇到时告警并跳过（bwrap 需要真实路径）。
 - `weakerNestedSandbox = true`：跳过 `--proc /proc`，改用 `--bind /proc /proc`（用于无 CAP_SYS_ADMIN 的容器）。
