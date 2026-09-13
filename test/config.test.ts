@@ -27,14 +27,61 @@ function writeConfig(dir: string, config: unknown, subdir = ".pi"): string {
 // Pure merging
 // ---------------------------------------------------------------------------
 
-test("project layer overrides global arrays (not concatenated)", () => {
+test("project layer extends global arrays by default", () => {
 	const merged = mergeConfigLayers(
 		DEFAULT_CONFIG,
 		{ filesystem: { allowWrite: ["/global"] } },
 		{ filesystem: { allowWrite: ["/project"] } },
 	);
-	assert.deepEqual(merged.filesystem?.allowWrite, ["/project"]);
+	assert.deepEqual(merged.filesystem?.allowWrite, ["/global", "/project"]);
 });
+
+test("project layer can replace selected global arrays", () => {
+	const merged = mergeConfigLayers(
+		DEFAULT_CONFIG,
+		{
+			filesystem: {
+				allowWrite: ["/global-write"],
+				denyRead: ["/global-secret"],
+			},
+			env: { deny: ["GLOBAL_*"] },
+		},
+		{
+			replaceGlobalArrays: ["filesystem.allowWrite", "env.deny"],
+			filesystem: {
+				allowWrite: ["/project-write"],
+				denyRead: ["/project-secret"],
+			},
+			env: { deny: ["PROJECT_*"] },
+		},
+	);
+	assert.deepEqual(merged.filesystem?.allowWrite, ["/project-write"]);
+	assert.deepEqual(merged.filesystem?.denyRead, ["/global-secret", "/project-secret"]);
+	assert.deepEqual(merged.env?.deny, ["PROJECT_*"]);
+});
+
+test("array merging removes duplicates in inherited and replacement values", () => {
+	const merged = mergeConfigLayers(
+		DEFAULT_CONFIG,
+		{
+			filesystem: {
+				allowWrite: ["/global", "/global"],
+			},
+			env: { deny: ["GLOBAL_*", "GLOBAL_*"] },
+		},
+		{
+			replaceGlobalArrays: ["filesystem.allowWrite"],
+			filesystem: {
+				allowWrite: ["/project", "/project"],
+				denyRead: ["/secret", "/secret"],
+			},
+		},
+	);
+	assert.deepEqual(merged.filesystem?.allowWrite, ["/project"]);
+	assert.deepEqual(merged.filesystem?.denyRead, ["/secret"]);
+	assert.deepEqual(merged.env?.deny, ["GLOBAL_*"]);
+});
+
 
 test("global layer is used when project omits the field", () => {
 	const merged = mergeConfigLayers(
@@ -223,7 +270,12 @@ test("unknown keys and invalid enums warn but do not fail", () => {
 	clearConfigCache();
 	const root = tempDir();
 	const project = join(root, "proj");
-	writeConfig(project, { network: "whitelist", bogus: true, filesystem: { allowRead: ["x"] } });
+	writeConfig(project, {
+		network: "whitelist",
+		bogus: true,
+		replaceGlobalArrays: ["filesystem.allowWrite", "not.a.field"],
+		filesystem: { allowRead: ["x"] },
+	});
 
 	const cfg = loadSandboxConfig({
 		projectRoot: project,
@@ -237,6 +289,7 @@ test("unknown keys and invalid enums warn but do not fail", () => {
 	assert.ok(cfg.sources.warnings.some((warning) => warning.startsWith("network:")));
 	assert.ok(cfg.sources.warnings.some((warning) => warning.startsWith("bogus:")));
 	assert.ok(cfg.sources.warnings.some((warning) => warning.startsWith("filesystem.allowRead:")));
+	assert.ok(cfg.sources.warnings.some((warning) => warning.includes("replaceGlobalArrays.not.a.field:")));
 });
 
 test("malformed JSON falls back to lower layers with a warning", () => {

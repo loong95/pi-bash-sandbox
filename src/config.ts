@@ -3,8 +3,8 @@
  *
  * Layers (lowest to highest): built-in defaults <- global <- project.
  * The project layer is only read when the project is trusted (decision D6).
- * Array fields override rather than concatenate, so a project can drop a
- * global rule; `env.set` merges per key.
+ * Project array fields extend global arrays by default; `replaceGlobalArrays`
+ * opts out per field. `env.set` merges per key.
  *
  * Relative rules resolve against the command cwd (not projectRoot), so each
  * worktree writes only its own tree. Glob rules are expanded to concrete
@@ -101,6 +101,7 @@ export function getConfigPaths(input: {
 // ---------------------------------------------------------------------------
 
 const TOP_LEVEL_KEYS = new Set([
+	"replaceGlobalArrays",
 	"enabled",
 	"network",
 	"filesystem",
@@ -115,6 +116,13 @@ const TOP_LEVEL_KEYS = new Set([
 const FILESYSTEM_KEYS = new Set(["allowWrite", "denyWrite", "denyRead"]);
 const ENV_KEYS = new Set(["passthrough", "deny", "set"]);
 const TOOLS_KEYS = new Set(["enabled", "requireAllowWrite"]);
+const MERGEABLE_ARRAY_FIELDS = new Set([
+	"filesystem.allowWrite",
+	"filesystem.denyWrite",
+	"filesystem.denyRead",
+	"env.passthrough",
+	"env.deny",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -163,6 +171,13 @@ export function validateConfigLayer(raw: unknown, source: string, warnings: stri
 	warnUnknownKeys(raw, TOP_LEVEL_KEYS, "", warnings);
 
 	const out: SandboxConfigFile = {};
+
+	const replaceGlobalArrays = asStringArray(raw.replaceGlobalArrays, "replaceGlobalArrays", warnings);
+	out.replaceGlobalArrays = replaceGlobalArrays?.filter((field) => {
+		if (MERGEABLE_ARRAY_FIELDS.has(field)) return true;
+		warnings.push(`replaceGlobalArrays.${field}: unsupported array field, ignoring`);
+		return false;
+	});
 
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
@@ -263,7 +278,23 @@ function pick<T>(project: T | undefined, global: T | undefined, defaults: T | un
 	return project ?? global ?? defaults;
 }
 
-/** Merge three layers. Array fields override; `env.set` merges per key. */
+/** Merge project arrays with global arrays unless explicitly opted out. */
+function mergeArray(
+	field: string,
+	project: string[] | undefined,
+	global: string[] | undefined,
+	defaults: string[] | undefined,
+	replaceGlobalArrays: Set<string>,
+): string[] | undefined {
+	if (project === undefined) {
+		const inherited = global ?? defaults;
+		return inherited === undefined ? undefined : [...new Set(inherited)];
+	}
+	if (global === undefined || replaceGlobalArrays.has(field)) return [...new Set(project)];
+	return [...new Set([...global, ...project])];
+}
+
+/** Merge three layers. Project arrays extend global arrays by default; `replaceGlobalArrays` opts out per field. */
 export function mergeConfigLayers(
 	defaults: SandboxConfigFile,
 	global: SandboxConfigFile,
@@ -271,23 +302,50 @@ export function mergeConfigLayers(
 ): SandboxConfigFile {
 	const g = global ?? {};
 	const p = project ?? {};
+	const replaceGlobalArrays = new Set(p.replaceGlobalArrays ?? []);
 
 	return {
 		enabled: pick(p.enabled, g.enabled, defaults.enabled),
 		network: pick(p.network, g.network, defaults.network),
 		filesystem: {
-			allowWrite: pick(
+			allowWrite: mergeArray(
+				"filesystem.allowWrite",
 				p.filesystem?.allowWrite,
 				g.filesystem?.allowWrite,
 				defaults.filesystem?.allowWrite,
+				replaceGlobalArrays,
 			),
-			denyWrite: pick(p.filesystem?.denyWrite, g.filesystem?.denyWrite, defaults.filesystem?.denyWrite),
-			denyRead: pick(p.filesystem?.denyRead, g.filesystem?.denyRead, defaults.filesystem?.denyRead),
+			denyWrite: mergeArray(
+				"filesystem.denyWrite",
+				p.filesystem?.denyWrite,
+				g.filesystem?.denyWrite,
+				defaults.filesystem?.denyWrite,
+				replaceGlobalArrays,
+			),
+			denyRead: mergeArray(
+				"filesystem.denyRead",
+				p.filesystem?.denyRead,
+				g.filesystem?.denyRead,
+				defaults.filesystem?.denyRead,
+				replaceGlobalArrays,
+			),
 		},
 		tmp: pick(p.tmp, g.tmp, defaults.tmp),
 		env: {
-			passthrough: pick(p.env?.passthrough, g.env?.passthrough, defaults.env?.passthrough),
-			deny: pick(p.env?.deny, g.env?.deny, defaults.env?.deny),
+			passthrough: mergeArray(
+				"env.passthrough",
+				p.env?.passthrough,
+				g.env?.passthrough,
+				defaults.env?.passthrough,
+				replaceGlobalArrays,
+			),
+			deny: mergeArray(
+				"env.deny",
+				p.env?.deny,
+				g.env?.deny,
+				defaults.env?.deny,
+				replaceGlobalArrays,
+			),
 			set: { ...defaults.env?.set, ...g.env?.set, ...p.env?.set },
 		},
 		unsharePid: pick(p.unsharePid, g.unsharePid, defaults.unsharePid),

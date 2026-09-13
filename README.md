@@ -128,10 +128,32 @@ environment; only the whitelisted variables exist inside.
 | Global | `~/.pi/agent/sandbox.json` (respects `PI_CODING_AGENT_DIR`) |
 | Project | `<project>/.pi/sandbox.json` (only when the project is trusted) |
 
-Merging order: **built-in defaults ← global ← project**. Array fields *override*
-rather than concatenate, so a project can drop a global rule. `env.set` merges
-per key. For linked worktrees, the worktree's own `.pi/sandbox.json` is used when
-present, otherwise the main checkout's.
+Merging order: **built-in defaults ← global ← project**. Project array fields
+extend the corresponding global arrays by default, with duplicates removed. To
+replace selected global arrays instead, list their dotted names in the
+project's `replaceGlobalArrays` field:
+
+```json
+{
+  "replaceGlobalArrays": ["filesystem.allowWrite", "env.deny"],
+  "filesystem": {
+    "allowWrite": ["./dist"],
+    "denyRead": ["./local-secrets"]
+  },
+  "env": {
+    "deny": ["PROJECT_*"]
+  }
+}
+```
+
+In this example, `filesystem.allowWrite` and `env.deny` use only the project
+values, while `filesystem.denyRead` remains global plus project. Supported
+array names are `filesystem.allowWrite`, `filesystem.denyWrite`,
+`filesystem.denyRead`, `env.passthrough`, and `env.deny`. If the project does
+not define an array, it continues to inherit the global value. `env.set` always
+merges per key. `extraBwrapArgs` remains replacement-only because argument
+ordering can affect sandbox behavior. For linked worktrees, the worktree's own
+`.pi/sandbox.json` is used when present, otherwise the main checkout's.
 
 `enabled` follows the same layering: set it globally to change the default for
 every project, or in a project config to override just that project.
@@ -141,6 +163,7 @@ every project, or in a project config to override just that project.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
+| `replaceGlobalArrays` | string[] | `[]` | Project array fields that replace, rather than extend, the corresponding global arrays (dotted names) |
 | `enabled` | boolean | `true` | Master switch |
 | `network` | `"none"` \| `"host"` | `"none"` | `none` adds `--unshare-net` |
 | `filesystem.allowWrite` | string[] | `[".", "/tmp"]` | Writable paths (everything else is read-only) |

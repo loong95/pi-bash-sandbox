@@ -20,6 +20,8 @@ export interface ToolsPolicyConfig {
 
 /** User-editable configuration. Every field is optional; layers merge. */
 export interface SandboxConfigFile {
+	/** Project-only escape hatch for array fields; global arrays are inherited by default. */
+	replaceGlobalArrays?: string[];
 	enabled?: boolean;
 	network?: NetworkMode;
 	filesystem?: {

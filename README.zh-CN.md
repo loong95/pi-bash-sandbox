@@ -120,9 +120,28 @@ SandboxedBashOperations
 | 全局 | `~/.pi/agent/sandbox.json`（尊重 `PI_CODING_AGENT_DIR`） |
 | 项目 | `<项目>/.pi/sandbox.json`（仅当项目被信任时加载） |
 
-合并顺序：**内置默认 ← 全局 ← 项目**。数组字段是**覆盖**而不是拼接，所以项目可以删掉
-全局规则；`env.set` 按键合并。linked worktree 优先用自己那份 `.pi/sandbox.json`，
-没有则回退到主 checkout 的。
+合并顺序：**内置默认 ← 全局 ← 项目**。项目数组默认会拼接对应的全局数组，并自动去重。
+如果需要让某些数组只使用项目值，可以在项目配置的 `replaceGlobalArrays` 中列出它们的点号路径：
+
+```json
+{
+  "replaceGlobalArrays": ["filesystem.allowWrite", "env.deny"],
+  "filesystem": {
+    "allowWrite": ["./dist"],
+    "denyRead": ["./local-secrets"]
+  },
+  "env": {
+    "deny": ["PROJECT_*"]
+  }
+}
+```
+
+上例中，`filesystem.allowWrite` 和 `env.deny` 只使用项目值，
+而 `filesystem.denyRead` 仍然是全局值加项目值。支持的数组字段为
+`filesystem.allowWrite`、`filesystem.denyWrite`、`filesystem.denyRead`、
+`env.passthrough` 和 `env.deny`。项目未声明某个数组时，继续继承全局值。
+`env.set` 始终按 key 合并。`extraBwrapArgs` 仍然只覆盖不拼接，因为参数顺序可能影响沙箱行为。
+linked worktree 优先用自己那份 `.pi/sandbox.json`，没有则回退到主 checkout 的。
 
 `enabled` 同样遵循这套分层：写在全局就是所有项目的默认开关，写在项目里就只覆盖该项目。
 `/sandbox-enable` 和 `/sandbox-disable` 会帮你写入。
@@ -131,6 +150,7 @@ SandboxedBashOperations
 
 | 字段 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
+| `replaceGlobalArrays` | string[] | `[]` | 项目级配置中需要替换而不是继承全局值的数组字段（使用点号路径） |
 | `enabled` | boolean | `true` | 总开关 |
 | `network` | `"none"` \| `"host"` | `"none"` | `none` 会加 `--unshare-net` |
 | `filesystem.allowWrite` | string[] | `[".", "/tmp"]` | 可写路径（其余只读） |
