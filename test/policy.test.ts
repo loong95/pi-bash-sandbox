@@ -12,7 +12,7 @@ import {
 	targetWithinRule,
 } from "../src/policy.ts";
 import type { ResolvedSandboxConfig } from "../src/types.ts";
-import { makeResolvedConfig } from "./fixtures.ts";
+import { makeResolvedConfig, makeSources, makeVariables } from "./fixtures.ts";
 
 const HOME = realpathSync(mkdtempSync(join(tmpdir(), "pibs-policy-")));
 const PROJECT = join(HOME, "proj");
@@ -29,6 +29,8 @@ function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSan
 			denyWrite: [".env", ".env.*", "*.pem"],
 			denyRead: [SECRET_DIR],
 		},
+		variables: makeVariables({ repo: PROJECT, worktree: PROJECT }),
+		sources: makeSources({ projectRoot: PROJECT, worktreeRoot: PROJECT }),
 		...overrides,
 	});
 }
@@ -152,3 +154,93 @@ test("explainPath: file outside allowWrite", () => {
 	assert.deepEqual(explanation.allowWriteRules, []);
 });
 
+// ---------------------------------------------------------------------------
+// Path variables
+// ---------------------------------------------------------------------------
+
+test("$worktrees in allowWrite permits writes to a sibling worktree", () => {
+	const repo = "/home/u/proj";
+	const worktree = "/home/u/proj-worktrees/feature";
+	const sibling = "/home/u/proj-worktrees/other";
+	const config = makeConfig({
+		rules: { allowWrite: ["$worktrees"], denyWrite: [], denyRead: [] },
+		variables: { repo, worktree, worktrees: [repo, worktree, sibling] },
+	});
+
+	assert.equal(evaluateToolCall({ toolName: "write", path: join(sibling, "a.ts"), cwd: worktree, config }).block, false);
+	assert.equal(evaluateToolCall({ toolName: "edit", path: join(repo, "b.ts"), cwd: worktree, config }).block, false);
+	assert.equal(evaluateToolCall({ toolName: "write", path: join(worktree, "c.ts"), cwd: worktree, config }).block, false);
+});
+
+test("$worktree keeps writes inside the current worktree only", () => {
+	const repo = "/home/u/proj";
+	const worktree = "/home/u/proj-worktrees/feature";
+	const sibling = "/home/u/proj-worktrees/other";
+	const config = makeConfig({
+		rules: { allowWrite: ["$worktree"], denyWrite: [], denyRead: [] },
+		variables: { repo, worktree, worktrees: [repo, worktree, sibling] },
+	});
+
+	assert.equal(evaluateToolCall({ toolName: "write", path: join(worktree, "a.ts"), cwd: worktree, config }).block, false);
+	const blocked = evaluateToolCall({ toolName: "write", path: join(sibling, "a.ts"), cwd: worktree, config });
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason ?? "", /outside allowWrite/);
+});
+
+test("$worktrees with a subpath or glob expands per worktree", () => {
+	const repo = "/home/u/proj";
+	const worktree = "/home/u/proj-worktrees/feature";
+	const sibling = "/home/u/proj-worktrees/other";
+	const variables = { repo, worktree, worktrees: [repo, worktree, sibling] };
+	const config = makeConfig({
+		rules: { allowWrite: ["$worktrees/src"], denyWrite: [], denyRead: [] },
+		variables,
+	});
+
+	assert.equal(
+		evaluateToolCall({ toolName: "write", path: join(sibling, "src/x.ts"), cwd: worktree, config }).block,
+		false,
+	);
+	assert.equal(
+		evaluateToolCall({ toolName: "write", path: join(sibling, "lib/x.ts"), cwd: worktree, config }).block,
+		true,
+	);
+});
+
+test("deny rules also expand variables, so a guard beats $worktrees", () => {
+	const repo = "/home/u/proj";
+	const worktree = "/home/u/proj-worktrees/feature";
+	const config = makeConfig({
+		rules: { allowWrite: ["$worktrees"], denyWrite: [join(repo, ".git/config")], denyRead: [] },
+		variables: { repo, worktree, worktrees: [repo, worktree] },
+	});
+
+	const blocked = evaluateToolCall({
+		toolName: "write",
+		path: join(repo, ".git/config"),
+		cwd: worktree,
+		config,
+	});
+	assert.equal(blocked.block, true);
+	assert.match(blocked.reason ?? "", /denyWrite/);
+});
+
+test("an unknown variable never matches, so the write stays blocked", () => {
+	const config = makeConfig({
+		rules: { allowWrite: ["$nope"], denyWrite: [], denyRead: [] },
+		variables: makeVariables({ repo: PROJECT, worktree: PROJECT }),
+	});
+	assert.equal(evaluateToolCall({ toolName: "write", path: join(PROJECT, "a.ts"), cwd: PROJECT, config }).block, true);
+});
+
+test("explainPath reports variable rules that matched", () => {
+	const worktree = "/home/u/proj-worktrees/feature";
+	const sibling = "/home/u/proj-worktrees/other";
+	const config = makeConfig({
+		rules: { allowWrite: ["$worktrees"], denyWrite: [], denyRead: [] },
+		variables: { repo: "/home/u/proj", worktree, worktrees: [worktree, sibling] },
+	});
+	const explanation = explainPath({ path: join(sibling, "a.ts"), cwd: worktree, config });
+	assert.deepEqual(explanation.allowWriteRules, ["$worktrees"]);
+	assert.equal(explanation.write.block, false);
+});

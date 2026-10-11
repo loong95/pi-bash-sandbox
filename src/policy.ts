@@ -17,7 +17,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { expandTilde, hasGlob } from "./config.ts";
-import type { ResolvedSandboxConfig } from "./types.ts";
+import type { PathVariables, ResolvedSandboxConfig } from "./types.ts";
+import { expandVariables } from "./variables.ts";
 
 function escapeRegex(input: string): string {
 	return input.replace(/[.+^${}()|[\]\\]/g, "\\$&");
@@ -68,19 +69,43 @@ export function normalizeTarget(raw: string, cwd: string): string {
 }
 
 /** allowWrite semantics: the target is the rule path or inside it (or matches a glob rule). */
-export function targetWithinRule(target: string, rule: string, cwd: string): boolean {
-	const absolute = resolveRule(rule, cwd);
-	if (hasGlob(absolute)) return globToPathRegex(absolute).test(target);
-	return target === absolute || target.startsWith(absolute.endsWith("/") ? absolute : `${absolute}/`);
+export function targetWithinRule(
+	target: string,
+	rule: string,
+	cwd: string,
+	variables?: PathVariables,
+): boolean {
+	return expandVariablesForPolicy(rule, variables).some((expanded) => {
+		const absolute = resolveRule(expanded, cwd);
+		if (hasGlob(absolute)) return globToPathRegex(absolute).test(target);
+		return target === absolute || target.startsWith(absolute.endsWith("/") ? absolute : `${absolute}/`);
+	});
 }
 
 /** deny semantics: a bare relative pattern (`.env`, `*.pem`) matches the basename anywhere. */
-export function targetMatchesDenyRule(target: string, rule: string, cwd: string): boolean {
-	const expanded = expandTilde(rule);
-	if (!isAbsolute(expanded) && !expanded.includes("/")) {
-		return globToPathRegex(expanded).test(basename(target));
-	}
-	return targetWithinRule(target, rule, cwd);
+export function targetMatchesDenyRule(
+	target: string,
+	rule: string,
+	cwd: string,
+	variables?: PathVariables,
+): boolean {
+	return expandVariablesForPolicy(rule, variables).some((expanded) => {
+		const tildeExpanded = expandTilde(expanded);
+		if (!isAbsolute(tildeExpanded) && !tildeExpanded.includes("/")) {
+			return globToPathRegex(tildeExpanded).test(basename(target));
+		}
+		return targetWithinRule(target, expanded, cwd);
+	});
+}
+
+/** Substitute `$repo`/`$worktree`/`$worktrees`; rules without variables pass through. */
+function expandVariablesForPolicy(rule: string, variables?: PathVariables): string[] {
+	if (!variables) return [rule];
+	return expandVariables(rule, {
+		repo: variables.repo,
+		worktree: variables.worktree,
+		worktrees: variables.worktrees,
+	});
 }
 
 export interface ToolCallPolicyInput {
@@ -112,9 +137,14 @@ export function evaluateToolCall(input: ToolCallPolicyInput): ToolCallPolicyDeci
 	const isWrite = WRITE_POLICY_TOOLS.has(toolName);
 	if (!isReadOnly && !isWrite) return { block: false };
 
+	const variables = config.variables;
 	const target = normalizeTarget(path, cwd);
-	const matchesDenyRead = config.rules.denyRead.some((rule) => targetMatchesDenyRule(target, rule, cwd));
-	const matchesDenyWrite = config.rules.denyWrite.some((rule) => targetMatchesDenyRule(target, rule, cwd));
+	const matchesDenyRead = config.rules.denyRead.some((rule) =>
+		targetMatchesDenyRule(target, rule, cwd, variables),
+	);
+	const matchesDenyWrite = config.rules.denyWrite.some((rule) =>
+		targetMatchesDenyRule(target, rule, cwd, variables),
+	);
 
 	if (isReadOnly) {
 		if (matchesDenyRead) return { block: true, reason: `${toolName} blocked: "${path}" matches denyRead` };
@@ -125,7 +155,9 @@ export function evaluateToolCall(input: ToolCallPolicyInput): ToolCallPolicyDeci
 	if (matchesDenyWrite) return { block: true, reason: `${toolName} blocked: "${path}" matches denyWrite` };
 
 	if (config.tools.requireAllowWrite) {
-		const withinAllowWrite = config.rules.allowWrite.some((rule) => targetWithinRule(target, rule, cwd));
+		const withinAllowWrite = config.rules.allowWrite.some((rule) =>
+			targetWithinRule(target, rule, cwd, variables),
+		);
 		if (!withinAllowWrite) return { block: true, reason: `${toolName} blocked: "${path}" is outside allowWrite` };
 	}
 
@@ -152,10 +184,17 @@ export function explainPath(input: {
 	config: ResolvedSandboxConfig;
 }): PathExplanation {
 	const { path, cwd, config } = input;
+	const variables = config.variables;
 	const target = normalizeTarget(path, cwd);
-	const denyReadRules = config.rules.denyRead.filter((rule) => targetMatchesDenyRule(target, rule, cwd));
-	const denyWriteRules = config.rules.denyWrite.filter((rule) => targetMatchesDenyRule(target, rule, cwd));
-	const allowWriteRules = config.rules.allowWrite.filter((rule) => targetWithinRule(target, rule, cwd));
+	const denyReadRules = config.rules.denyRead.filter((rule) =>
+		targetMatchesDenyRule(target, rule, cwd, variables),
+	);
+	const denyWriteRules = config.rules.denyWrite.filter((rule) =>
+		targetMatchesDenyRule(target, rule, cwd, variables),
+	);
+	const allowWriteRules = config.rules.allowWrite.filter((rule) =>
+		targetWithinRule(target, rule, cwd, variables),
+	);
 
 	return {
 		target,

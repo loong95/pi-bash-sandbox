@@ -10,6 +10,7 @@ import {
 	DEFAULT_CONFIG,
 	expandTilde,
 	getConfigPaths,
+	gitWritablePaths,
 	loadSandboxConfig,
 	mergeConfigLayers,
 } from "../src/config.ts";
@@ -357,7 +358,6 @@ function realGitLayout(): { root: string; main: string; worktree: string; git: G
 test("buildGitGuard protects config, hooks, and pointer files", () => {
 	const { git } = realGitLayout();
 	const guard = buildGitGuard(git);
-	assert.equal(guard.detected, true);
 	assert.equal(guard.active, true);
 	assert.ok(guard.readOnly.includes(join(git.commonDir, "config")));
 	assert.ok(guard.readOnly.includes(join(git.commonDir, "hooks")));
@@ -379,9 +379,9 @@ test("buildGitGuard protects config, hooks, and pointer files", () => {
 
 test("buildGitGuard is inert without a repository", () => {
 	const guard = buildGitGuard(null);
-	assert.equal(guard.detected, false);
 	assert.equal(guard.active, false);
 	assert.deepEqual(guard.readOnly, []);
+	assert.deepEqual(guard.writable, []);
 });
 
 test("buildGitGuard never names a missing path (bwrap would create it)", () => {
@@ -398,3 +398,138 @@ test("buildGitGuard skips the main checkout's nonexistent commondir/gitdir", () 
 	assert.ok(guard.readOnly.includes(join(git.commonDir, "config")));
 });
 
+test("gitWritablePaths opens the worktree gitdir plus the shared store", () => {
+	const { git } = realGitLayout();
+	const paths = gitWritablePaths(git);
+	assert.ok(paths.includes(git.gitDir));
+	assert.ok(paths.includes(join(git.commonDir, "objects")));
+	assert.ok(paths.includes(join(git.commonDir, "refs")));
+	assert.ok(paths.includes(join(git.commonDir, "logs")));
+	// config/hooks must never be writable
+	assert.equal(paths.includes(join(git.commonDir, "config")), false);
+	assert.equal(paths.includes(join(git.commonDir, "hooks")), false);
+});
+
+test("gitWritablePaths returns only the common dir for the main checkout", () => {
+	const { git } = realGitLayout();
+	assert.deepEqual(gitWritablePaths({ ...git, gitDir: git.commonDir }), [git.commonDir]);
+});
+
+test("$worktrees expands to every worktree, including siblings", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	const paths = cfg.allowWrite.map((path) => path.path);
+	assert.ok(paths.includes(worktree), `expected ${worktree} in ${paths}`);
+	assert.ok(paths.includes(realpathSync(main)), `expected main checkout in ${paths}`);
+});
+
+test("the git layer is opt-in: literal rules leave .git alone", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["."] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	assert.equal(cfg.gitGuard.detected, true);
+	assert.equal(cfg.gitGuard.active, false);
+	// The store stays closed...
+	assert.equal(cfg.gitGuard.writable.length, 0);
+	assert.equal(
+		cfg.allowWrite.some((path) => path.path.startsWith(git.commonDir)),
+		false,
+	);
+	// ...but the config/hooks guards still apply, because they only remove
+	// access. Without them a broad `allowWrite` would expose `core.hooksPath`.
+	assert.ok(cfg.gitGuard.readOnly.length > 0);
+	assert.ok(cfg.denyWrite.some((path) => path.path === join(git.commonDir, "config")));
+});
+
+test("a git variable enables the writable git store and the read-only guards", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["$worktree"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	const writable = cfg.allowWrite.map((path) => path.path);
+	assert.ok(writable.includes(git.gitDir));
+	assert.ok(writable.includes(join(git.commonDir, "objects")));
+
+	const readOnly = cfg.denyWrite.map((path) => path.path);
+	assert.ok(readOnly.includes(join(git.commonDir, "config")));
+	assert.ok(readOnly.includes(join(git.commonDir, "hooks")));
+	assert.ok(readOnly.includes(join(git.gitDir, "commondir")));
+
+	// denyWrite is applied after allowWrite by bwrap, so the guard wins.
+	for (const path of readOnly) assert.equal(writable.includes(path), false);
+});
+
+test("without git plumbing a git variable expands to nothing (non-git dir)", () => {
+	clearConfigCache();
+	const root = tempDir();
+	const project = join(root, "proj");
+	mkdirSync(project, { recursive: true });
+	writeConfig(project, { filesystem: { allowWrite: ["$worktrees"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: project,
+		worktreeRoot: project,
+		cwd: project,
+		projectTrusted: true,
+		agentDir: join(root, "agent"),
+		git: null,
+	});
+
+	// $worktrees falls back to the current worktree, which does exist.
+	assert.deepEqual(cfg.allowWrite.map((path) => path.path), [project]);
+	assert.equal(cfg.gitGuard.detected, false);
+	assert.equal(cfg.gitGuard.active, false);
+	assert.deepEqual(cfg.gitGuard.readOnly, []);
+});
+
+test("git guards also reach the tool policy, not just bwrap", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	// `write`/`edit` never enter bwrap, so the guards have to be in the raw
+	// rules the tool policy matches against. Missing them here would let the
+	// `write` tool set core.hooksPath and reach host code execution.
+	assert.ok(cfg.rules.denyWrite.includes(join(git.commonDir, "config")));
+	assert.ok(cfg.rules.denyWrite.includes(join(git.commonDir, "hooks")));
+	assert.ok(cfg.rules.denyWrite.includes(join(git.gitDir, "commondir")));
+});

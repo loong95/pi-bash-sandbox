@@ -19,6 +19,7 @@ import type { GitLayout } from "./project.ts";
 import type {
 	ConfigSources,
 	NetworkMode,
+	PathVariables,
 	ResolvedGitGuard,
 	ResolvedPath,
 	ResolvedSandboxConfig,
@@ -26,6 +27,8 @@ import type {
 	TmpMode,
 	UnavailablePolicy,
 } from "./types.ts";
+import { expandVariables, pathVariableContext, usesKnownVariable } from "./variables.ts";
+import type { PathVariableContext } from "./variables.ts";
 
 export const CONFIG_DIR_NAME = ".pi";
 export const SANDBOX_CONFIG_FILENAME = "sandbox.json";
@@ -398,6 +401,16 @@ function expandRule(rule: string, cwd: string, warnings: string[]): ResolvedPath
 	return out;
 }
 
+/** Expand one rule: substitute variables, then resolve each result to existing paths. */
+function expandRuleWithVariables(
+	rule: string,
+	cwd: string,
+	context: PathVariableContext,
+	warnings: string[],
+): ResolvedPath[] {
+	return expandVariables(rule, context).flatMap((expanded) => expandRule(expanded, cwd, warnings));
+}
+
 function dedupPaths(paths: ResolvedPath[]): ResolvedPath[] {
 	const seen = new Set<string>();
 	const out: ResolvedPath[] = [];
@@ -449,7 +462,7 @@ function isFile(path: string): boolean {
  * worse than the gap it closes.
  */
 export function buildGitGuard(git: GitLayout | null | undefined): ResolvedGitGuard {
-	if (!git) return { detected: false, active: false, commonDir: null, gitDir: null, readOnly: [] };
+	if (!git) return { detected: false, active: false, commonDir: null, gitDir: null, writable: [], readOnly: [] };
 
 	const readOnly: string[] = [];
 	const add = (path: string | null | undefined): void => {
@@ -484,8 +497,36 @@ export function buildGitGuard(git: GitLayout | null | undefined): ResolvedGitGua
 		active: true,
 		commonDir: git.commonDir,
 		gitDir: git.gitDir,
+		writable: [],
 		readOnly: dedupStrings(readOnly),
 	};
+}
+
+/**
+ * Paths git must be able to write to commit from a linked worktree.
+ *
+ * A linked worktree's `.git` file points at `<commonDir>/worktrees/<name>`,
+ * which holds that checkout's `HEAD`/`index`; the shared object store, refs,
+ * and reflogs live in the common dir. Only the last group needs opening, and
+ * only when the user opted in by referencing a git variable.
+ */
+export function gitWritablePaths(git: GitLayout | null | undefined): string[] {
+	if (!git) return [];
+	// The main checkout's gitdir *is* the common dir and sits inside the repo,
+	// so `allowWrite: ["."]` already covers it. Binding it again is harmless
+	// and keeps the two cases uniform.
+	if (git.gitDir === git.commonDir) return [git.commonDir];
+
+	const paths = [git.gitDir];
+	for (const name of ["objects", "refs", "logs", "packed-refs"]) {
+		paths.push(join(git.commonDir, name));
+	}
+	return paths.filter((path) => existsSync(path));
+}
+
+/** True when any rule references `$repo`, `$worktree`, or `$worktrees`. */
+function usesGitVariables(rules: string[] | undefined): boolean {
+	return (rules ?? []).some((rule) => usesKnownVariable(rule));
 }
 
 // ---------------------------------------------------------------------------
@@ -539,19 +580,40 @@ function normalize(
 	git: GitLayout | null | undefined,
 ): ResolvedSandboxConfig {
 	const warnings = sources.warnings;
+	const variables = pathVariableContext({
+		projectRoot: sources.projectRoot,
+		worktreeRoot: sources.worktreeRoot,
+		worktrees: git?.worktrees,
+	});
 	const expandAll = (rules: string[] | undefined): ResolvedPath[] =>
-		dedupPaths((rules ?? []).flatMap((rule) => expandRule(rule, cwd, warnings)));
+		dedupPaths((rules ?? []).flatMap((rule) => expandRuleWithVariables(rule, cwd, variables, warnings)));
 
 	const gitGuard = buildGitGuard(git);
+	// The read-only guards are unconditional: they only ever *remove* write
+	// access that a broad allowWrite (`.`, `$repo`, `$worktrees`) would
+	// otherwise grant, so applying them when nothing is granted is a harmless
+	// no-op. Opening the git store is the opt-in half — only a rule that
+	// references a git variable unlocks it.
+	const gitEnabled =
+		gitGuard.detected &&
+		(usesGitVariables(merged.filesystem?.allowWrite) || usesGitVariables(merged.filesystem?.denyWrite));
 
 	const allowWrite = expandAll(merged.filesystem?.allowWrite);
 	const denyWrite = expandAll(merged.filesystem?.denyWrite);
 
-	// The read-only guards are unconditional: they only ever *remove* write
-	// access that a broad allowWrite (`.`) would otherwise grant, so applying
-	// them when nothing is granted is a harmless no-op.
+	const allowWritePaths = new Set(allowWrite.map((path) => path.path));
 	const denyWritePaths = new Set(denyWrite.map((path) => path.path));
+
+	const gitWritable: ResolvedPath[] = [];
 	const gitReadOnly: ResolvedPath[] = [];
+	if (gitEnabled) {
+		for (const path of gitWritablePaths(git)) {
+			if (!allowWritePaths.has(path)) {
+				allowWritePaths.add(path);
+				gitWritable.push({ path, isDir: true, rule: "$git" });
+			}
+		}
+	}
 	for (const path of gitGuard.readOnly) {
 		if (!denyWritePaths.has(path)) {
 			denyWritePaths.add(path);
@@ -573,7 +635,7 @@ function normalize(
 	return {
 		enabled: merged.enabled ?? true,
 		network: merged.network ?? "none",
-		allowWrite,
+		allowWrite: [...allowWrite, ...gitWritable],
 		denyWrite: [...denyWrite, ...gitReadOnly],
 		denyRead: expandAll(merged.filesystem?.denyRead),
 		tmp: merged.tmp ?? "private",
@@ -591,11 +653,13 @@ function normalize(
 			denyWrite: rawDenyWrite,
 			denyRead: merged.filesystem?.denyRead ?? [],
 		},
+		variables,
 		gitGuard: {
 			detected: gitGuard.detected,
-			active: gitGuard.detected,
+			active: gitEnabled,
 			commonDir: gitGuard.commonDir,
 			gitDir: gitGuard.gitDir,
+			writable: gitWritable.map((path) => path.path),
 			readOnly: gitReadOnly.map((path) => path.path),
 		},
 		tools: {
@@ -665,6 +729,8 @@ export function loadSandboxConfig(input: LoadSandboxConfigInput): ResolvedSandbo
 			projectPath: raw.projectPath,
 			projectTrusted: raw.projectTrusted,
 			warnings: [...raw.warnings],
+			projectRoot: input.projectRoot,
+			worktreeRoot: input.worktreeRoot,
 		},
 		input.git,
 	);

@@ -116,6 +116,10 @@ Later mounts cover earlier ones, so the order is significant:
 -- <shell> -c <command>
 ```
 
+The git store and the git guards ride on the same two steps: the store is
+appended to `allowWrite`, the guards to `denyWrite`. Because `denyWrite` is
+applied after `allowWrite`, a guard always wins over a broad `allowWrite`.
+
 `--clearenv` plus explicit `--setenv` means the sandbox starts from a clean
 environment; only the whitelisted variables exist inside.
 
@@ -181,10 +185,72 @@ every project, or in a project config to override just that project.
 | `tools.requireAllowWrite` | boolean | `true` | `write`/`edit` targets must be inside `allowWrite` |
 
 Path rules support `~` expansion, relative paths (resolved against the command
-cwd), and globs (`*`, `?`, `**`). A bare relative pattern such as `.env` or
-`*.pem` matches by basename. Rules that match nothing are skipped — `bwrap` can
-only bind paths that exist, and the tool policy matches the raw patterns, so
-`.env.*` protects files created later too.
+cwd), globs (`*`, `?`, `**`), and path variables. A bare relative pattern such
+as `.env` or `*.pem` matches by basename. Rules that match nothing are skipped —
+`bwrap` can only bind paths that exist, and the tool policy matches the raw
+patterns, so `.env.*` protects files created later too.
+
+### Path variables
+
+Worktree directories are machine- and branch-specific, so hard-coding them in
+`sandbox.json` cannot work. Three variables are substituted in any path rule:
+
+| Variable | Expands to |
+|---|---|
+| `$repo` | Main checkout root (shared by every worktree) |
+| `$worktree` | Toplevel of the worktree the command runs in |
+| `$worktrees` | Every worktree root, main checkout first (**multi-valued**) |
+
+`$worktrees` is multi-valued: one rule expands into one rule per worktree, so
+`allowWrite: ["$worktrees"]` covers every linked worktree, including ones
+created after the session started. Expansion re-runs on every command.
+
+```json
+{
+  "filesystem": {
+    "allowWrite": ["$worktrees", "/tmp"],
+    "denyWrite": ["~/.ssh", ".env", "*.pem"]
+  }
+}
+```
+
+A literal `$` is written `\$`. Unknown `$name` references are reported in the
+`/sandbox` warnings and left verbatim, so the rule simply never matches.
+
+`$worktree` instead of `$worktrees` keeps each worktree isolated from its
+siblings — the variables are general, not just a way to widen access.
+
+### Automatic git protection
+
+When a repository is detected, the sandbox derives extra rules from the git
+layout. **This needs no configuration**; `/sandbox` reports it as `git guard`.
+
+Two paths inside a git dir are host code execution, because git runs them
+*outside* the sandbox on the next command: `.git/config` (via `core.hooksPath`)
+and the hooks directory. Guards cover those, plus `config.worktree`, `info`,
+every sibling worktree's private gitdir, and every worktree's `.git` pointer
+file, so one worktree cannot damage another's `HEAD`/`index` or repoint a
+gitdir pointer. Guards are emitted as `denyWrite`, so they win over any
+`allowWrite`, including `$repo` and `$worktrees`.
+
+Referencing a git variable additionally opens the store a commit needs: the
+worktree's private gitdir plus the shared `objects`, `refs`, and `logs`. Without
+a git variable nothing is opened, so a config of literal paths cannot commit
+from a linked worktree.
+
+```mermaid
+flowchart TD
+  A["allowWrite: ['$worktrees']"] --> B["expand variables"]
+  B --> C["bind each worktree"]
+  C --> D["+ git store<br/>gitdir, objects, refs, logs"]
+  D --> E["git guard (denyWrite)<br/>config, hooks, info,<br/>sibling gitdirs, .git files"]
+```
+
+Guards only name paths that already exist: `bwrap` creates the destination of a
+bind, so guarding a missing file would leave a 0-byte artifact on the host, and
+an empty `commondir` makes git fail outright. `git worktree add` is deliberately
+*not* opened — it would require writable `config`, which is the hook-execution
+vector. Create worktrees with git itself.
 
 ### Tool policy semantics
 
@@ -192,7 +258,8 @@ only bind paths that exist, and the tool policy matches the raw patterns, so
 matches a `denyRead` rule. `write` / `edit` are blocked on `denyRead` or
 `denyWrite`, and by default must land inside `allowWrite`. Set
 `tools.requireAllowWrite: false` to relax the containment check while keeping the
-deny lists.
+deny lists. The git guards apply here too, so the built-in `write` tool cannot
+reach a path the bash sandbox would refuse.
 
 ## Commands
 
@@ -221,6 +288,12 @@ deny lists.
 - **Project-to-project reads.** `--ro-bind / /` means any project can read any
   other unless you add it to `denyRead`. Use explicit `denyRead` entries or a
   minimal-root configuration for stronger isolation.
+- **`$worktrees` is a shared write surface.** One rule grants every worktree, so
+  an agent in worktree A can modify worktree B's files. Use `$worktree` when you
+  want each checkout isolated instead.
+- **`git worktree add` is not opened.** It needs a writable `.git/worktrees`,
+  which is exactly the directory that must stay read-only to keep hooks safe.
+  Create worktrees with git itself.
 - **The tool policy is best-effort.** It blocks the built-in file tools, but a
   custom extension tool or the pi-web web terminal / file browser is not covered.
 - **Interactive TTY commands** (vim, htop) are not supported inside the sandbox.
@@ -240,8 +313,9 @@ pnpm run all     # check + test
 
 | Path | Purpose |
 |---|---|
-| `src/config.ts` | Config discovery, layering, validation, path expansion |
-| `src/project.ts` | cwd → project root / worktree root |
+| `src/config.ts` | Config discovery, layering, validation, path expansion, git layer |
+| `src/project.ts` | cwd → project root / worktree root / git layout |
+| `src/variables.ts` | `$repo` / `$worktree` / `$worktrees` expansion |
 | `src/bwrap.ts` | Pure `buildBwrapArgs` |
 | `src/env.ts` | Environment allow/deny matching |
 | `src/probe.ts` | bwrap availability and capability detection |

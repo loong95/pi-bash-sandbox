@@ -273,6 +273,38 @@ async function buildArgsFor(cwd: string, config: unknown, command: string): Prom
 	});
 }
 
+test("worktree: allowWrite [$worktrees] can commit", { skip }, async () => {
+	const { worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	writeFileSync(join(worktree, "file.txt"), "one\n");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		"git add file.txt && git commit -q -m 'from sandbox' && git log --oneline -1",
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /from sandbox/);
+});
+
+test("worktree: $worktrees lets one worktree write a sibling's files", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	const sibling = join(main, "..", "sibling");
+	execFileSync("git", ["-C", main, "worktree", "add", "-q", sibling, "-b", "sibling"], { stdio: "pipe" });
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	writeFileSync(join(sibling, "sib.txt"), "original\n");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		`echo edited >> ${join(sibling, "sib.txt")}`,
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(join(sibling, "sib.txt"), "utf-8"), "original\nedited\n");
+});
+
 test("worktree: the git guard blocks hooks, config, and pointer rewrites", { skip }, async () => {
 	const { main, worktree } = worktreeProject();
 	mkdirSync(join(worktree, ".pi"), { recursive: true });
@@ -293,6 +325,28 @@ test("worktree: the git guard blocks hooks, config, and pointer rewrites", { ski
 	assert.match(result.stdout, /cfg_blocked/);
 	assert.match(result.stdout, /dotgit_blocked/);
 	assert.equal(result.stdout.includes("LEAK"), false, result.stdout);
+});
+
+test("worktree: the git guard does not break normal git operations", { skip }, async () => {
+	const { worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	writeFileSync(join(worktree, "file.txt"), "base\n");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		[
+			"git add file.txt && git commit -q -m c1",
+			// Stash needs a real change, so touch the file first.
+			"echo more >> file.txt && git stash -q && git stash pop -q",
+			"git tag v1",
+			"git checkout -q -b topic",
+			"git log --oneline -1",
+		].join(" && "),
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /c1/);
 });
 
 test("worktree: a literal allowWrite leaves the git store read-only", { skip }, async () => {

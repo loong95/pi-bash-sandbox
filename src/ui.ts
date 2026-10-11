@@ -44,8 +44,12 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 
 	if (config.gitGuard.active) {
 		lines.push(
-			`git guard: common=${config.gitGuard.commonDir} gitdir=${config.gitGuard.gitDir} (${config.gitGuard.readOnly.length} read-only)`,
+			`git guard: common=${config.gitGuard.commonDir} gitdir=${config.gitGuard.gitDir} (+${config.gitGuard.writable.length} writable, ${config.gitGuard.readOnly.length} read-only)`,
 		);
+	}
+	lines.push(`variables: repo=${config.variables.repo} worktree=${config.variables.worktree}`);
+	if (config.variables.worktrees.length > 1) {
+		lines.push(`           worktrees=${config.variables.worktrees.join(", ")}`);
 	}
 	lines.push(`env passthrough: ${config.env.passthrough.join(", ") || "(none)"}`);
 	lines.push(`env deny: ${config.env.deny.join(", ") || "(none)"}`);

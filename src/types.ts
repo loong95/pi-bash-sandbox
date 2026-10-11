@@ -53,6 +53,20 @@ export interface ResolvedPath {
 	rule: string;
 }
 
+/**
+ * Paths that `$repo`, `$worktree`, and `$worktrees` expand to. Derived from
+ * the git layout so a single `allowWrite: ["$worktrees"]` covers every linked
+ * worktree, including ones created after the session started.
+ */
+export interface PathVariables {
+	/** Main checkout root, shared by every worktree. */
+	repo: string;
+	/** Toplevel of the worktree the command runs in. */
+	worktree: string;
+	/** Every worktree root, main checkout first. */
+	worktrees: string[];
+}
+
 /** Auto-injected git protection, surfaced by `/sandbox` for diagnostics. */
 export interface ResolvedGitGuard {
 	/** True when a git repository was detected. */
@@ -63,6 +77,8 @@ export interface ResolvedGitGuard {
 	commonDir: string | null;
 	/** This checkout's private git dir (`--git-dir`). */
 	gitDir: string | null;
+	/** Paths git must be able to write (added to allowWrite). */
+	writable: string[];
 	/** Paths kept read-only even when allowWrite covers the repo (added to denyWrite). */
 	readOnly: string[];
 }
@@ -78,9 +94,13 @@ export interface ConfigSources {
 	projectPath: string | null;
 	projectTrusted: boolean;
 	warnings: string[];
+	/** Main checkout root, used to expand `$repo`. */
+	projectRoot: string;
+	/** Current worktree toplevel, used to expand `$worktree`. */
+	worktreeRoot: string;
 }
 
-/** Raw path rules for the tool_call policy matcher (globs are not pre-expanded). */
+/** Raw path rules for the tool_call policy matcher (globs stay unexpanded, variables are substituted). */
 export interface RawPathRules {
 	allowWrite: string[];
 	denyWrite: string[];
@@ -107,6 +127,8 @@ export interface ResolvedSandboxConfig {
 	extraBwrapArgs: string[];
 	/** Raw rules for the tool_call policy matcher (globs are not pre-expanded). */
 	rules: RawPathRules;
+	/** Resolved `$repo` / `$worktree` / `$worktrees` values. */
+	variables: PathVariables;
 	/** Automatic git protection layer derived from the repository layout. */
 	gitGuard: ResolvedGitGuard;
 	tools: ResolvedToolsPolicy;

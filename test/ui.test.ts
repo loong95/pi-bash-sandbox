@@ -18,11 +18,14 @@ const CONFIG: ResolvedSandboxConfig = makeResolvedConfig({
 	denyWrite: [{ path: "/repo/wt/.env", isDir: false, rule: ".env" }],
 	env: { passthrough: ["PATH"], deny: ["*_TOKEN"], set: {} },
 	rules: { allowWrite: ["."], denyWrite: [".env"], denyRead: ["~/.ssh"] },
+	variables: { repo: "/repo", worktree: "/repo/wt", worktrees: ["/repo", "/repo/wt"] },
 	sources: {
 		globalPath: "/home/u/.pi/agent/sandbox.json",
 		projectPath: "/repo/wt/.pi/sandbox.json",
 		projectTrusted: true,
 		warnings: ["bogus: unknown key, ignoring"],
+		projectRoot: "/repo",
+		worktreeRoot: "/repo/wt",
 	},
 });
 
