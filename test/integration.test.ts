@@ -5,15 +5,16 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { buildBwrapArgs } from "../src/bwrap.ts";
 import { loadSandboxConfig } from "../src/config.ts";
 import { resolveSandboxEnv } from "../src/env.ts";
 import { createSandboxedBashOperations } from "../src/exec.ts";
+import { resolveProjectRoot } from "../src/project.ts";
 import type { BwrapCapabilities } from "../src/types.ts";
 
 const BWRAP = process.env.BWRAP ?? "bwrap";
@@ -220,4 +221,122 @@ test("exec abort kills the process group", { skip }, async () => {
 	const promise = operations.exec("sleep 30", project, { onData: () => {}, signal: controller.signal });
 	setTimeout(() => controller.abort(), 200);
 	await assert.rejects(promise, /aborted/);
+});
+
+// ---------------------------------------------------------------------------
+// Linked worktrees
+// ---------------------------------------------------------------------------
+
+// These repos must live *outside* /tmp. The default `tmp: "private"` mounts an
+// empty /tmp, which would hide a repository created underneath it — the tests
+// would then pass or fail for reasons unrelated to the git guard. They also
+// must not use `tmp: "shared"`, which would make all of /tmp writable and mask
+// the read-only git store this section is asserting on.
+const WORKTREE_BASE = mkdtempSync(join(process.cwd(), ".worktree-tests-"));
+after(() => rmSync(WORKTREE_BASE, { recursive: true, force: true }));
+
+/** Create a real repo with one linked worktree; returns both roots. */
+function worktreeProject(): { root: string; main: string; worktree: string } {
+	const root = realpathSync(mkdtempSync(join(WORKTREE_BASE, "repo-")));
+	const main = join(root, "main");
+	mkdirSync(main, { recursive: true });
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+	git(main, "init", "-q");
+	git(main, "config", "user.email", "test@example.com");
+	git(main, "config", "user.name", "test");
+	git(main, "commit", "-q", "--allow-empty", "-m", "init");
+
+	const worktree = join(root, "feature");
+	git(main, "worktree", "add", "-q", worktree, "-b", "feature");
+	return { root, main: realpathSync(main), worktree: realpathSync(worktree) };
+}
+
+/** Build bwrap argv for a command in `cwd`, using the real git layout. */
+async function buildArgsFor(cwd: string, config: unknown, command: string): Promise<string[]> {
+	writeFileSync(join(cwd, ".pi", "sandbox.json"), JSON.stringify(config));
+	const project = await resolveProjectRoot(cwd, { ttlMs: 0 });
+	const resolved = loadSandboxConfig({
+		projectRoot: project.projectRoot,
+		worktreeRoot: project.worktreeRoot,
+		cwd,
+		projectTrusted: true,
+		agentDir: join(cwd, "agent"),
+		git: project.git,
+	});
+	return buildBwrapArgs({
+		command,
+		cwd,
+		env: resolveSandboxEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd }, resolved.env),
+		config: resolved,
+		capabilities: CAPS,
+		shell: { shell: "/bin/bash", args: ["-c"] },
+	});
+}
+
+test("worktree: the git guard blocks hooks, config, and pointer rewrites", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	const hooksDir = join(main, ".git", "hooks");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees", "$repo"] } },
+		[
+			`echo pwn > ${hooksDir}/post-commit && echo HOOK_LEAK || echo hook_blocked`,
+			`git config core.hooksPath /tmp && echo CFG_LEAK || echo cfg_blocked`,
+			`printf 'gitdir: /tmp\\n' > ${worktree}/.git && echo DOTGIT_LEAK || echo dotgit_blocked`,
+		].join("; "),
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /hook_blocked/);
+	assert.match(result.stdout, /cfg_blocked/);
+	assert.match(result.stdout, /dotgit_blocked/);
+	assert.equal(result.stdout.includes("LEAK"), false, result.stdout);
+});
+
+test("worktree: a literal allowWrite leaves the git store read-only", { skip }, async () => {
+	const { worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	writeFileSync(join(worktree, "file.txt"), "one\n");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["."] } },
+		"git add file.txt && git commit -q -m nope",
+	);
+	const result = run(args);
+	// Committing needs the shared object store, which is not opened without a
+	// git variable, so the write fails instead of silently succeeding.
+	assert.notEqual(result.status, 0);
+	assert.match(result.stderr, /Read-only file system/);
+});
+
+test("main checkout: .git/config and hooks are read-only, commit still works", { skip }, async () => {
+	const { main } = worktreeProject();
+	mkdirSync(join(main, ".pi"), { recursive: true });
+	writeFileSync(join(main, "file.txt"), "one\n");
+	const hooksDir = join(main, ".git", "hooks");
+
+	const args = await buildArgsFor(
+		main,
+		{ filesystem: { allowWrite: ["."] } },
+		[
+			// A plain commit must still work: the guards only cover config/hooks.
+			"git add file.txt && git commit -q -m ok && git log --oneline -1",
+			// Planting a hook here would run on the host on the next commit.
+			`echo pwn > ${hooksDir}/post-commit && echo HOOK_LEAK || echo hook_blocked`,
+			// `core.hooksPath` is the other code-execution vector.
+			`git config core.hooksPath /tmp && echo CFG_LEAK || echo cfg_blocked`,
+			`printf '[core]\\n\\thooksPath = /tmp\\n' >> ${main}/.git/config && echo APPEND_LEAK || echo append_blocked`,
+		].join("; "),
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /ok/);
+	assert.match(result.stdout, /hook_blocked/);
+	assert.match(result.stdout, /cfg_blocked/);
+	assert.match(result.stdout, /append_blocked/);
+	assert.equal(result.stdout.includes("LEAK"), false, result.stdout);
+	assert.equal(existsSync(join(hooksDir, "post-commit")), false);
 });

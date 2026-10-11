@@ -41,6 +41,12 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 	lines.push(`allowWrite: ${formatPaths(config.allowWrite)}`);
 	lines.push(`denyWrite: ${formatPaths(config.denyWrite)}`);
 	lines.push(`denyRead: ${formatPaths(config.denyRead)}`);
+
+	if (config.gitGuard.active) {
+		lines.push(
+			`git guard: common=${config.gitGuard.commonDir} gitdir=${config.gitGuard.gitDir} (${config.gitGuard.readOnly.length} read-only)`,
+		);
+	}
 	lines.push(`env passthrough: ${config.env.passthrough.join(", ") || "(none)"}`);
 	lines.push(`env deny: ${config.env.deny.join(", ") || "(none)"}`);
 	lines.push(

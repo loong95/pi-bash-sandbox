@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildBwrapArgs } from "../src/bwrap.ts";
 import type { BwrapCapabilities, ResolvedPath, ResolvedSandboxConfig } from "../src/types.ts";
+import { makeResolvedConfig } from "./fixtures.ts";
 
 const CAPS: BwrapCapabilities = { available: true, userNamespace: true, procMount: true };
 const SHELL = { shell: "/bin/bash", args: ["-c"] };
@@ -14,23 +15,7 @@ function file(path: string, rule = path): ResolvedPath {
 }
 
 function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSandboxConfig {
-	return {
-		enabled: true,
-		network: "none",
-		allowWrite: [],
-		denyWrite: [],
-		denyRead: [],
-		tmp: "private",
-		env: { passthrough: [], deny: [], set: {} },
-		unsharePid: true,
-		weakerNestedSandbox: false,
-		onUnavailable: "error",
-		extraBwrapArgs: [],
-		rules: { allowWrite: [], denyWrite: [], denyRead: [] },
-		tools: { enabled: true, requireAllowWrite: true },
-		sources: { globalPath: "/global/sandbox.json", projectPath: null, projectTrusted: false, warnings: [] },
-		...overrides,
-	};
+	return makeResolvedConfig(overrides);
 }
 
 test("canonical argv: full golden", () => {

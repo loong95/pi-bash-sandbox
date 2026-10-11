@@ -50,6 +50,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 					cwd,
 					projectTrusted,
 					agentDir: resolveAgentDir(),
+					git: project.git,
 				});
 			},
 			capabilities: () => probeBwrap(),
@@ -107,6 +108,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 			cwd,
 			projectTrusted: ctx.isProjectTrusted(),
 			agentDir: resolveAgentDir(),
+			git: project.git,
 		});
 		if (!config.enabled) return undefined;
 
@@ -127,6 +129,7 @@ export default function piBashSandbox(pi: ExtensionAPI): void {
 			cwd,
 			projectTrusted: ctx.isProjectTrusted(),
 			agentDir: resolveAgentDir(),
+			git: project.git,
 		});
 		return { cwd, project, config };
 	}

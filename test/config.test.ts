@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	buildGitGuard,
 	clearConfigCache,
 	DEFAULT_CONFIG,
 	expandTilde,
@@ -11,6 +13,7 @@ import {
 	loadSandboxConfig,
 	mergeConfigLayers,
 } from "../src/config.ts";
+import type { GitLayout } from "../src/project.ts";
 
 function tempDir(): string {
 	return realpathSync(mkdtempSync(join(tmpdir(), "pibs-")));
@@ -316,3 +319,82 @@ test("getConfigPaths dedups when worktreeRoot === projectRoot", () => {
 	const paths = getConfigPaths({ projectRoot: root, worktreeRoot: root, agentDir: join(root, "agent") });
 	assert.equal(paths.projectCandidates.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Git layer
+// ---------------------------------------------------------------------------
+
+/** Build a real repo + linked worktree on disk and return its GitLayout. */
+function realGitLayout(): { root: string; main: string; worktree: string; git: GitLayout } {
+	const root = tempDir();
+	const main = join(root, "main");
+	mkdirSync(main, { recursive: true });
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+	git(main, "init", "-q");
+	git(main, "config", "user.email", "t@e.st");
+	git(main, "config", "user.name", "t");
+	git(main, "commit", "-q", "--allow-empty", "-m", "init");
+
+	const worktree = join(root, "wt");
+	git(main, "worktree", "add", "-q", worktree, "-b", "feature");
+
+	const commonDir = realpathSync(join(main, ".git"));
+	const gitDir = realpathSync(join(commonDir, "worktrees", "wt"));
+	return {
+		root,
+		main,
+		worktree: realpathSync(worktree),
+		git: {
+			commonDir,
+			gitDir,
+			hooksDir: join(commonDir, "hooks"),
+			worktrees: [realpathSync(main), realpathSync(worktree)],
+			siblingGitDirs: [],
+		},
+	};
+}
+
+test("buildGitGuard protects config, hooks, and pointer files", () => {
+	const { git } = realGitLayout();
+	const guard = buildGitGuard(git);
+	assert.equal(guard.detected, true);
+	assert.equal(guard.active, true);
+	assert.ok(guard.readOnly.includes(join(git.commonDir, "config")));
+	assert.ok(guard.readOnly.includes(join(git.commonDir, "hooks")));
+	assert.ok(guard.readOnly.includes(join(git.gitDir, "commondir")));
+	assert.ok(guard.readOnly.includes(join(git.gitDir, "gitdir")));
+	// Every worktree's `.git` *pointer file* is protected. The main checkout's
+	// `.git` is a directory holding the shared store, so it is not a guard.
+	for (const worktree of git.worktrees) {
+		const pointer = join(worktree, ".git");
+		if (statSync(pointer).isFile()) {
+			assert.ok(guard.readOnly.includes(pointer), `missing ${pointer}`);
+		} else {
+			assert.equal(guard.readOnly.includes(pointer), false, `directory must not be guarded: ${pointer}`);
+		}
+	}
+	// The linked worktree's pointer file is the one that actually exists.
+	assert.ok(guard.readOnly.includes(join(git.worktrees[1], ".git")));
+});
+
+test("buildGitGuard is inert without a repository", () => {
+	const guard = buildGitGuard(null);
+	assert.equal(guard.detected, false);
+	assert.equal(guard.active, false);
+	assert.deepEqual(guard.readOnly, []);
+});
+
+test("buildGitGuard never names a missing path (bwrap would create it)", () => {
+	const { git } = realGitLayout();
+	const guard = buildGitGuard(git);
+	for (const path of guard.readOnly) assert.ok(existsSync(path), `guarded path must exist: ${path}`);
+});
+
+test("buildGitGuard skips the main checkout's nonexistent commondir/gitdir", () => {
+	const { git } = realGitLayout();
+	const guard = buildGitGuard({ ...git, gitDir: git.commonDir });
+	assert.equal(guard.readOnly.includes(join(git.commonDir, "commondir")), false);
+	assert.equal(guard.readOnly.includes(join(git.commonDir, "gitdir")), false);
+	assert.ok(guard.readOnly.includes(join(git.commonDir, "config")));
+});
+

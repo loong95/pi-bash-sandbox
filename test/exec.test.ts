@@ -6,29 +6,14 @@ import test from "node:test";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { createSandboxedBashOperations } from "../src/exec.ts";
 import type { BwrapCapabilities, ResolvedSandboxConfig } from "../src/types.ts";
+import { makeResolvedConfig } from "./fixtures.ts";
 
 const CAPS: BwrapCapabilities = { available: true, userNamespace: true, procMount: true };
 const SHELL = { shell: "/bin/bash", args: ["-c"] };
 const CWD = realpathSync(mkdtempSync(join(tmpdir(), "pibs-exec-")));
 
 function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSandboxConfig {
-	return {
-		enabled: true,
-		network: "none",
-		allowWrite: [],
-		denyWrite: [],
-		denyRead: [],
-		tmp: "private",
-		env: { passthrough: ["PATH"], deny: ["*_TOKEN"], set: {} },
-		unsharePid: true,
-		weakerNestedSandbox: false,
-		onUnavailable: "error",
-		extraBwrapArgs: [],
-		rules: { allowWrite: [], denyWrite: [], denyRead: [] },
-		tools: { enabled: true, requireAllowWrite: true },
-		sources: { globalPath: "/g", projectPath: null, projectTrusted: false, warnings: [] },
-		...overrides,
-	};
+	return makeResolvedConfig({ env: { passthrough: ["PATH"], deny: ["*_TOKEN"], set: {} }, ...overrides });
 }
 
 function fallbackSpy(): { ops: BashOperations; calls: string[] } {

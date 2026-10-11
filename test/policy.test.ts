@@ -12,6 +12,7 @@ import {
 	targetWithinRule,
 } from "../src/policy.ts";
 import type { ResolvedSandboxConfig } from "../src/types.ts";
+import { makeResolvedConfig } from "./fixtures.ts";
 
 const HOME = realpathSync(mkdtempSync(join(tmpdir(), "pibs-policy-")));
 const PROJECT = join(HOME, "proj");
@@ -22,27 +23,14 @@ writeFileSync(join(SECRET_DIR, "id_ed25519"), "key");
 writeFileSync(join(PROJECT, ".env"), "A=1");
 
 function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSandboxConfig {
-	return {
-		enabled: true,
-		network: "none",
-		allowWrite: [],
-		denyWrite: [],
-		denyRead: [],
-		tmp: "private",
-		env: { passthrough: [], deny: [], set: {} },
-		unsharePid: true,
-		weakerNestedSandbox: false,
-		onUnavailable: "error",
-		extraBwrapArgs: [],
+	return makeResolvedConfig({
 		rules: {
 			allowWrite: [PROJECT, "/tmp"],
 			denyWrite: [".env", ".env.*", "*.pem"],
 			denyRead: [SECRET_DIR],
 		},
-		tools: { enabled: true, requireAllowWrite: true },
-		sources: { globalPath: "/g", projectPath: null, projectTrusted: false, warnings: [] },
 		...overrides,
-	};
+	});
 }
 
 function decide(toolName: string, path: string, config = makeConfig()) {
@@ -163,3 +151,4 @@ test("explainPath: file outside allowWrite", () => {
 	assert.equal(explanation.bashWriteBlocked, true);
 	assert.deepEqual(explanation.allowWriteRules, []);
 });
+

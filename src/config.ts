@@ -15,9 +15,11 @@
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
+import type { GitLayout } from "./project.ts";
 import type {
 	ConfigSources,
 	NetworkMode,
+	ResolvedGitGuard,
 	ResolvedPath,
 	ResolvedSandboxConfig,
 	SandboxConfigFile,
@@ -411,6 +413,81 @@ function dedupStrings(values: string[]): string[] {
 	return [...new Set(values)];
 }
 
+/** True for a regular file; false for a directory, missing path, or error. */
+function isFile(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Git layer
+// ---------------------------------------------------------------------------
+
+/**
+ * Automatic git protection, applied whenever a repository is detected.
+ *
+ * `bash` is wrapped by bwrap, so a writable `allowWrite` path is a real write
+ * capability. Two paths inside a git dir turn that into host code execution,
+ * because git executes them *outside* the sandbox on the next command:
+ *
+ * - `.git/config` (`core.hooksPath` redirect)
+ * - the hooks directory
+ *
+ * Everything else here prevents cross-worktree damage: one worktree must not
+ * rewrite another worktree's `HEAD`/`index`, nor repoint a gitdir pointer
+ * (`commondir`, `gitdir`, or the `.git` file) at an attacker-chosen directory.
+ *
+ * Guards are emitted as `denyWrite` (a read-only self-bind) so they win over
+ * any `allowWrite` rule, including `$repo`/`$worktrees`.
+ *
+ * Only *existing* paths are guarded: bwrap creates the destination of a bind,
+ * so guarding a missing file would leave a 0-byte artifact on the host. An
+ * empty `commondir`/`gitdir` makes git fail outright, so a stray artifact is
+ * worse than the gap it closes.
+ */
+export function buildGitGuard(git: GitLayout | null | undefined): ResolvedGitGuard {
+	if (!git) return { detected: false, active: false, commonDir: null, gitDir: null, readOnly: [] };
+
+	const readOnly: string[] = [];
+	const add = (path: string | null | undefined): void => {
+		if (path && existsSync(path)) readOnly.push(path);
+	};
+
+	// Shared config and hooks: writable here means code execution on the host.
+	add(join(git.commonDir, "config"));
+	add(join(git.commonDir, "config.worktree"));
+	if (git.hooksDir) add(git.hooksDir);
+	add(join(git.commonDir, "info"));
+
+	// Pointer files in our own gitdir. These exist for linked worktrees only;
+	// the main checkout has no `commondir`, and creating one would break it.
+	if (git.gitDir !== git.commonDir) {
+		add(join(git.gitDir, "commondir"));
+		add(join(git.gitDir, "gitdir"));
+		add(join(git.gitDir, "config.worktree"));
+	}
+
+	// Every other worktree's private gitdir, and every worktree's `.git`
+	// pointer *file*. The main checkout's `.git` is a directory holding the
+	// shared store; guarding it would undo the writable binds above.
+	for (const sibling of git.siblingGitDirs) add(sibling);
+	for (const worktree of git.worktrees) {
+		const pointer = join(worktree, ".git");
+		if (isFile(pointer)) add(pointer);
+	}
+
+	return {
+		detected: true,
+		active: true,
+		commonDir: git.commonDir,
+		gitDir: git.gitDir,
+		readOnly: dedupStrings(readOnly),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
@@ -421,6 +498,8 @@ export interface LoadSandboxConfigInput {
 	cwd: string;
 	projectTrusted: boolean;
 	agentDir?: string;
+	/** Git plumbing for the command cwd; enables the automatic git guard. */
+	git?: GitLayout | null;
 }
 
 /**
@@ -457,17 +536,45 @@ function normalize(
 	merged: SandboxConfigFile,
 	cwd: string,
 	sources: ConfigSources,
+	git: GitLayout | null | undefined,
 ): ResolvedSandboxConfig {
 	const warnings = sources.warnings;
 	const expandAll = (rules: string[] | undefined): ResolvedPath[] =>
 		dedupPaths((rules ?? []).flatMap((rule) => expandRule(rule, cwd, warnings)));
 
+	const gitGuard = buildGitGuard(git);
+
+	const allowWrite = expandAll(merged.filesystem?.allowWrite);
+	const denyWrite = expandAll(merged.filesystem?.denyWrite);
+
+	// The read-only guards are unconditional: they only ever *remove* write
+	// access that a broad allowWrite (`.`) would otherwise grant, so applying
+	// them when nothing is granted is a harmless no-op.
+	const denyWritePaths = new Set(denyWrite.map((path) => path.path));
+	const gitReadOnly: ResolvedPath[] = [];
+	for (const path of gitGuard.readOnly) {
+		if (!denyWritePaths.has(path)) {
+			denyWritePaths.add(path);
+			gitReadOnly.push({ path, isDir: true, rule: "$git" });
+		}
+	}
+
+	// The built-in `write`/`edit` tools do not run inside bwrap; they are gated
+	// by the tool policy, which matches `rules.denyWrite` (raw patterns) rather
+	// than the resolved `denyWrite` paths. The guards must appear in both, or
+	// the `write` tool could set `.git/config`'s `core.hooksPath` and reach host
+	// code execution without ever going through the mount layer.
+	const rawDenyWrite = [...(merged.filesystem?.denyWrite ?? [])];
+	for (const path of gitReadOnly) {
+		if (!rawDenyWrite.includes(path.path)) rawDenyWrite.push(path.path);
+	}
+
 	const env = merged.env ?? {};
 	return {
 		enabled: merged.enabled ?? true,
 		network: merged.network ?? "none",
-		allowWrite: expandAll(merged.filesystem?.allowWrite),
-		denyWrite: expandAll(merged.filesystem?.denyWrite),
+		allowWrite,
+		denyWrite: [...denyWrite, ...gitReadOnly],
 		denyRead: expandAll(merged.filesystem?.denyRead),
 		tmp: merged.tmp ?? "private",
 		env: {
@@ -481,8 +588,15 @@ function normalize(
 		extraBwrapArgs: merged.extraBwrapArgs ?? [],
 		rules: {
 			allowWrite: merged.filesystem?.allowWrite ?? [],
-			denyWrite: merged.filesystem?.denyWrite ?? [],
+			denyWrite: rawDenyWrite,
 			denyRead: merged.filesystem?.denyRead ?? [],
+		},
+		gitGuard: {
+			detected: gitGuard.detected,
+			active: gitGuard.detected,
+			commonDir: gitGuard.commonDir,
+			gitDir: gitGuard.gitDir,
+			readOnly: gitReadOnly.map((path) => path.path),
 		},
 		tools: {
 			enabled: merged.tools?.enabled ?? true,
@@ -543,10 +657,15 @@ function loadRawConfig(input: LoadSandboxConfigInput): RawConfig {
  */
 export function loadSandboxConfig(input: LoadSandboxConfigInput): ResolvedSandboxConfig {
 	const raw = loadRawConfig(input);
-	return normalize(raw.merged, input.cwd, {
-		globalPath: raw.globalPath,
-		projectPath: raw.projectPath,
-		projectTrusted: raw.projectTrusted,
-		warnings: [...raw.warnings],
-	});
+	return normalize(
+		raw.merged,
+		input.cwd,
+		{
+			globalPath: raw.globalPath,
+			projectPath: raw.projectPath,
+			projectTrusted: raw.projectTrusted,
+			warnings: [...raw.warnings],
+		},
+		input.git,
+	);
 }

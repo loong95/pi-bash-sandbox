@@ -53,6 +53,20 @@ export interface ResolvedPath {
 	rule: string;
 }
 
+/** Auto-injected git protection, surfaced by `/sandbox` for diagnostics. */
+export interface ResolvedGitGuard {
+	/** True when a git repository was detected. */
+	detected: boolean;
+	/** True when the layer was applied (repo detected *and* a git variable used). */
+	active: boolean;
+	/** Shared git dir (`--git-common-dir`). */
+	commonDir: string | null;
+	/** This checkout's private git dir (`--git-dir`). */
+	gitDir: string | null;
+	/** Paths kept read-only even when allowWrite covers the repo (added to denyWrite). */
+	readOnly: string[];
+}
+
 export interface ResolvedEnvConfig {
 	passthrough: string[];
 	deny: string[];
@@ -66,7 +80,7 @@ export interface ConfigSources {
 	warnings: string[];
 }
 
-/** Raw (unexpanded) path rules, used by the tool_call policy matcher. */
+/** Raw path rules for the tool_call policy matcher (globs are not pre-expanded). */
 export interface RawPathRules {
 	allowWrite: string[];
 	denyWrite: string[];
@@ -93,6 +107,8 @@ export interface ResolvedSandboxConfig {
 	extraBwrapArgs: string[];
 	/** Raw rules for the tool_call policy matcher (globs are not pre-expanded). */
 	rules: RawPathRules;
+	/** Automatic git protection layer derived from the repository layout. */
+	gitGuard: ResolvedGitGuard;
 	tools: ResolvedToolsPolicy;
 	sources: ConfigSources;
 }

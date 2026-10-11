@@ -3,35 +3,28 @@ import test from "node:test";
 import type { ProjectInfo } from "../src/project.ts";
 import type { BwrapCapabilities, ResolvedSandboxConfig } from "../src/types.ts";
 import { formatArgv, formatPathExplanation, formatSandboxStatus, shellQuote } from "../src/ui.ts";
+import { makeResolvedConfig } from "./fixtures.ts";
 
 const PROJECT: ProjectInfo = {
 	cwd: "/repo/wt",
 	projectRoot: "/repo",
 	worktreeRoot: "/repo/wt",
 	isWorktree: true,
+	git: null,
 };
 
-const CONFIG: ResolvedSandboxConfig = {
-	enabled: true,
-	network: "none",
+const CONFIG: ResolvedSandboxConfig = makeResolvedConfig({
 	allowWrite: [{ path: "/repo/wt", isDir: true, rule: "." }],
 	denyWrite: [{ path: "/repo/wt/.env", isDir: false, rule: ".env" }],
-	denyRead: [],
-	tmp: "private",
 	env: { passthrough: ["PATH"], deny: ["*_TOKEN"], set: {} },
-	unsharePid: true,
-	weakerNestedSandbox: false,
-	onUnavailable: "error",
-	extraBwrapArgs: [],
 	rules: { allowWrite: ["."], denyWrite: [".env"], denyRead: ["~/.ssh"] },
-	tools: { enabled: true, requireAllowWrite: true },
 	sources: {
 		globalPath: "/home/u/.pi/agent/sandbox.json",
 		projectPath: "/repo/wt/.pi/sandbox.json",
 		projectTrusted: true,
 		warnings: ["bogus: unknown key, ignoring"],
 	},
-};
+});
 
 const CAPS: BwrapCapabilities = { available: true, version: "0.9.0", userNamespace: true, procMount: true };
 

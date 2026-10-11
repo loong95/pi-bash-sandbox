@@ -2,3 +2,4 @@ node_modules/
 dist/
 *.log
 .pi/sandbox.local.json
+.worktree-tests-*
