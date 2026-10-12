@@ -20,15 +20,12 @@
  * does not exist and are dropped like any other unmatched rule.
  *
  * Both the bwrap layer (config.ts) and the tool policy (policy.ts) expand
- * through this module, so the two never drift apart.
+ * through this module, so the two never drift apart. `PathVariables` is the
+ * single definition of what the variables hold; it lives in types.ts so both
+ * layers share it rather than restating the fields.
  */
 
-export interface PathVariableContext {
-	repo: string;
-	worktree: string;
-	/** Every worktree root, main checkout first. Falls back to `[worktree]`. */
-	worktrees: string[];
-}
+import type { PathVariables } from "./types.ts";
 
 interface Token {
 	literal?: string;
@@ -68,7 +65,7 @@ function tokenize(rule: string): Token[] {
 	return tokens;
 }
 
-function variableValues(name: string, context: PathVariableContext): string[] | null {
+function variableValues(name: string, context: PathVariables): string[] | null {
 	switch (name) {
 		case "repo":
 			return [context.repo];
@@ -96,14 +93,14 @@ export function findUnknownVariables(rule: string): string[] {
 	return [...new Set(unknown)];
 }
 
-const EMPTY_CONTEXT: PathVariableContext = { repo: "", worktree: "", worktrees: [] };
+const EMPTY_CONTEXT: PathVariables = { repo: "", worktree: "", worktrees: [] };
 
 /**
  * Substitute variables, returning one concrete rule per `$worktrees` value.
  * Rules without variables are returned unchanged, except that `\$` is
  * unescaped (a rule may legitimately need a literal `$` in a path).
  */
-export function expandVariables(rule: string, context: PathVariableContext): string[] {
+export function expandVariables(rule: string, context: PathVariables): string[] {
 	const tokens = tokenize(rule);
 	if (!tokens.some((token) => token.variable !== undefined)) {
 		// No substitution, but `\$` still has to become a literal `$`.
@@ -135,7 +132,7 @@ export function pathVariableContext(input: {
 	projectRoot: string;
 	worktreeRoot: string;
 	worktrees?: string[];
-}): PathVariableContext {
+}): PathVariables {
 	const worktrees = input.worktrees?.length ? input.worktrees : [input.worktreeRoot];
 	return { repo: input.projectRoot, worktree: input.worktreeRoot, worktrees };
 }

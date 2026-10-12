@@ -16,6 +16,7 @@ import { resolveSandboxEnv } from "../src/env.ts";
 import { createSandboxedBashOperations } from "../src/exec.ts";
 import { resolveProjectRoot } from "../src/project.ts";
 import type { BwrapCapabilities } from "../src/types.ts";
+import { createWorktreeRepo } from "./fixtures.ts";
 
 const BWRAP = process.env.BWRAP ?? "bwrap";
 
@@ -237,18 +238,7 @@ after(() => rmSync(WORKTREE_BASE, { recursive: true, force: true }));
 
 /** Create a real repo with one linked worktree; returns both roots. */
 function worktreeProject(): { root: string; main: string; worktree: string } {
-	const root = realpathSync(mkdtempSync(join(WORKTREE_BASE, "repo-")));
-	const main = join(root, "main");
-	mkdirSync(main, { recursive: true });
-	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
-	git(main, "init", "-q");
-	git(main, "config", "user.email", "test@example.com");
-	git(main, "config", "user.name", "test");
-	git(main, "commit", "-q", "--allow-empty", "-m", "init");
-
-	const worktree = join(root, "feature");
-	git(main, "worktree", "add", "-q", worktree, "-b", "feature");
-	return { root, main: realpathSync(main), worktree: realpathSync(worktree) };
+	return createWorktreeRepo(WORKTREE_BASE);
 }
 
 /** Build bwrap argv for a command in `cwd`, using the real git layout. */

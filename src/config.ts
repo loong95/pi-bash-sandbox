@@ -15,7 +15,8 @@
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
-import type { GitLayout } from "./project.ts";import type {
+import type { GitLayout } from "./project.ts";
+import type {
 	ConfigSources,
 	GitBlockCreate,
 	NetworkMode,
@@ -28,7 +29,6 @@ import type { GitLayout } from "./project.ts";import type {
 	UnavailablePolicy,
 } from "./types.ts";
 import { expandVariables, findUnknownVariables, pathVariableContext, usesKnownVariable } from "./variables.ts";
-import type { PathVariableContext } from "./variables.ts";
 
 export const CONFIG_DIR_NAME = ".pi";
 export const SANDBOX_CONFIG_FILENAME = "sandbox.json";
@@ -405,7 +405,7 @@ function expandRule(rule: string, cwd: string, warnings: string[]): ResolvedPath
 function expandRuleWithVariables(
 	rule: string,
 	cwd: string,
-	context: PathVariableContext,
+	context: PathVariables,
 	warnings: string[],
 ): ResolvedPath[] {
 	const unknown = findUnknownVariables(rule);
@@ -461,6 +461,21 @@ function dedupBlockCreate(entries: GitBlockCreate[]): GitBlockCreate[] {
 		if (!existing || (entry.isDir && !existing.isDir)) byPath.set(entry.path, entry);
 	}
 	return [...byPath.values()];
+}
+
+/**
+ * Append guard paths that the user did not already name, recording each in
+ * `seen` so a later rule for the same path is skipped.
+ *
+ * Guards are always directories here (git dirs and hooks dirs), which is why
+ * `isDir` is not a parameter.
+ */
+function appendGuardPaths(out: ResolvedPath[], seen: Set<string>, paths: readonly string[]): void {
+	for (const path of paths) {
+		if (seen.has(path)) continue;
+		seen.add(path);
+		out.push({ path, isDir: true, rule: "$git" });
+	}
 }
 
 /** True for a regular file; false for a directory, missing path, or error. */
@@ -678,43 +693,26 @@ function normalize(
 
 	const gitWritable: ResolvedPath[] = [];
 	const gitReadOnly: ResolvedPath[] = [];
-	if (gitEnabled) {
-		for (const path of gitWritablePaths(git)) {
-			if (!allowWritePaths.has(path)) {
-				allowWritePaths.add(path);
-				gitWritable.push({ path, isDir: true, rule: "$git" });
-			}
-		}
-	}
-	for (const path of gitGuard.readOnly) {
-		if (!denyWritePaths.has(path)) {
-			denyWritePaths.add(path);
-			gitReadOnly.push({ path, isDir: true, rule: "$git" });
-		}
-	}
+	if (gitEnabled) appendGuardPaths(gitWritable, allowWritePaths, gitWritablePaths(git));
+	appendGuardPaths(gitReadOnly, denyWritePaths, gitGuard.readOnly);
 
 	// The built-in `write`/`edit` tools do not run inside bwrap; they are gated
 	// by the tool policy, which matches `rules.denyWrite` (raw patterns) rather
 	// than the resolved `denyWrite` paths. The guards must appear in both, or
 	// the `write` tool could set `.git/config`'s `core.hooksPath` and reach host
-	// code execution without ever going through the mount layer.
-	const rawDenyWrite = [...(merged.filesystem?.denyWrite ?? [])];
-	for (const path of gitReadOnly) {
-		if (!rawDenyWrite.includes(path.path)) rawDenyWrite.push(path.path);
-	}
-
-	// Paths that do not exist yet are masked rather than read-only bound, and
-	// they cannot be expressed as a denyWrite *rule* (a rule matches by name, not
-	// by "does not exist"). The tool policy still needs to refuse writing them,
-	// so they are appended as exact raw rules too.
+	// code execution without ever going through the mount layer. Paths that do
+	// not exist yet (denyCreate) are included for the same reason: a denyWrite
+	// *rule* cannot express "must not be created".
 	const denyCreate: ResolvedPath[] = gitGuard.blockCreate.map((entry) => ({
 		path: entry.path,
 		isDir: entry.isDir,
 		rule: "$git",
 	}));
-	for (const entry of denyCreate) {
-		if (!rawDenyWrite.includes(entry.path)) rawDenyWrite.push(entry.path);
-	}
+	const rawDenyWrite = dedupStrings([
+		...(merged.filesystem?.denyWrite ?? []),
+		...gitReadOnly.map((path) => path.path),
+		...denyCreate.map((path) => path.path),
+	]);
 
 	const env = merged.env ?? {};
 	return {

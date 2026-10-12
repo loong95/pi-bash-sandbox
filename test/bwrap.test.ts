@@ -14,16 +14,12 @@ function file(path: string, rule = path): ResolvedPath {
 	return { path, isDir: false, rule };
 }
 
-function makeConfig(overrides: Partial<ResolvedSandboxConfig> = {}): ResolvedSandboxConfig {
-	return makeResolvedConfig(overrides);
-}
-
 test("canonical argv: full golden", () => {
 	const args = buildBwrapArgs({
 		command: "echo hi",
 		cwd: "/tmp/proj",
 		env: { PATH: "/usr/bin:/bin", HOME: "/home/u" },
-		config: makeConfig({
+		config: makeResolvedConfig({
 			allowWrite: [dir("/tmp/proj", ".")],
 			denyWrite: [file("/tmp/proj/.env", ".env")],
 			denyRead: [dir("/tmp/proj/secret"), file("/tmp/proj/key.txt")],
@@ -87,7 +83,7 @@ test("denyWrite uses read-only self-bind, never /dev/null", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ denyWrite: [file("/p/.env")] }),
+		config: makeResolvedConfig({ denyWrite: [file("/p/.env")] }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -103,7 +99,7 @@ test("denyRead dir -> tmpfs + remount-ro, file -> /dev/null", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ denyRead: [dir("/p/secret"), file("/p/key")] }),
+		config: makeResolvedConfig({ denyRead: [dir("/p/secret"), file("/p/key")] }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -127,7 +123,7 @@ test("denyRead wins over denyWrite for the same path (applied later)", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ denyWrite: [file("/p/.env")], denyRead: [file("/p/.env")] }),
+		config: makeResolvedConfig({ denyWrite: [file("/p/.env")], denyRead: [file("/p/.env")] }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -145,7 +141,7 @@ test("network host omits --unshare-net", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ network: "host" }),
+		config: makeResolvedConfig({ network: "host" }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -157,7 +153,7 @@ test("tmp shared binds /tmp instead of tmpfs", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ tmp: "shared" }),
+		config: makeResolvedConfig({ tmp: "shared" }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -171,7 +167,7 @@ test("no user namespace -> no --unshare-user / --cap-drop", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig(),
+		config: makeResolvedConfig(),
 		capabilities: { available: true, userNamespace: false, procMount: true },
 		shell: SHELL,
 	});
@@ -184,7 +180,7 @@ test("weakerNestedSandbox binds /proc instead of mounting it", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ weakerNestedSandbox: true }),
+		config: makeResolvedConfig({ weakerNestedSandbox: true }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -198,7 +194,7 @@ test("unsharePid false -> no pid flags and no proc mount", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ unsharePid: false }),
+		config: makeResolvedConfig({ unsharePid: false }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -211,7 +207,7 @@ test("extraBwrapArgs are appended after --chdir and before --", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({ extraBwrapArgs: ["--hostname", "sandbox"] }),
+		config: makeResolvedConfig({ extraBwrapArgs: ["--hostname", "sandbox"] }),
 		capabilities: CAPS,
 		shell: SHELL,
 	});
@@ -225,7 +221,7 @@ test("stdin command transport omits the command from argv", () => {
 		command: "echo hi",
 		cwd: "/p",
 		env: {},
-		config: makeConfig(),
+		config: makeResolvedConfig(),
 		capabilities: CAPS,
 		shell: { shell: "/bin/bash", args: ["-c"], commandTransport: "stdin" },
 	});
@@ -238,7 +234,7 @@ test("denyCreate: dir -> tmpfs + remount-ro, file -> /dev/null", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({
+		config: makeResolvedConfig({
 			denyCreate: [
 				{ path: "/p/.husky/_", isDir: true, rule: "$git" },
 				{ path: "/p/.git/worktrees/w/config.worktree", isDir: false, rule: "$git" },
@@ -271,7 +267,7 @@ test("denyCreate is applied after allowWrite, so it cannot be undone", () => {
 		command: "true",
 		cwd: "/p",
 		env: {},
-		config: makeConfig({
+		config: makeResolvedConfig({
 			allowWrite: [dir("/p")],
 			denyCreate: [{ path: "/p/.husky/_", isDir: true, rule: "$git" }],
 		}),

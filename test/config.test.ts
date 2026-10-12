@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +14,7 @@ import {
 	mergeConfigLayers,
 } from "../src/config.ts";
 import type { GitLayout } from "../src/project.ts";
+import { createWorktreeRepo, gitLayoutFor } from "./fixtures.ts";
 
 function tempDir(): string {
 	return realpathSync(mkdtempSync(join(tmpdir(), "pibs-")));
@@ -327,34 +327,8 @@ test("getConfigPaths dedups when worktreeRoot === projectRoot", () => {
 
 /** Build a real repo + linked worktree on disk and return its GitLayout. */
 function realGitLayout(): { root: string; main: string; worktree: string; git: GitLayout } {
-	const root = tempDir();
-	const main = join(root, "main");
-	mkdirSync(main, { recursive: true });
-	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
-	git(main, "init", "-q");
-	git(main, "config", "user.email", "t@e.st");
-	git(main, "config", "user.name", "t");
-	git(main, "commit", "-q", "--allow-empty", "-m", "init");
-
-	const worktree = join(root, "wt");
-	git(main, "worktree", "add", "-q", worktree, "-b", "feature");
-
-	const commonDir = realpathSync(join(main, ".git"));
-	const gitDir = realpathSync(join(commonDir, "worktrees", "wt"));
-	return {
-		root,
-		main,
-		worktree: realpathSync(worktree),
-		git: {
-			commonDir,
-			gitDir,
-			mainCheckout: realpathSync(main),
-			worktrees: [realpathSync(main), realpathSync(worktree)],
-			siblingGitDirs: [],
-			hooksDirs: [join(commonDir, "hooks")],
-			worktreeConfigEnabled: false,
-		},
-	};
+	const repo = createWorktreeRepo(tmpdir(), { prefix: "pibs-git-" });
+	return { ...repo, git: gitLayoutFor(repo) };
 }
 
 test("buildGitGuard protects config, hooks, and pointer files", () => {
@@ -491,7 +465,7 @@ test("a git variable enables the writable git store and the read-only guards", (
 	for (const path of readOnly) assert.equal(writable.includes(path), false);
 });
 
-test("without git plumbing a git variable expands to nothing (non-git dir)", () => {
+test("$worktrees falls back to the current directory outside a git repo", () => {
 	clearConfigCache();
 	const root = tempDir();
 	const project = join(root, "proj");

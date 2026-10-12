@@ -100,12 +100,7 @@ export function targetMatchesDenyRule(
 
 /** Substitute `$repo`/`$worktree`/`$worktrees`; rules without variables pass through. */
 function expandVariablesForPolicy(rule: string, variables?: PathVariables): string[] {
-	if (!variables) return [rule];
-	return expandVariables(rule, {
-		repo: variables.repo,
-		worktree: variables.worktree,
-		worktrees: variables.worktrees,
-	});
+	return variables ? expandVariables(rule, variables) : [rule];
 }
 
 export interface ToolCallPolicyInput {

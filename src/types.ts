@@ -57,13 +57,16 @@ export interface ResolvedPath {
  * Paths that `$repo`, `$worktree`, and `$worktrees` expand to. Derived from
  * the git layout so a single `allowWrite: ["$worktrees"]` covers every linked
  * worktree, including ones created after the session started.
+ *
+ * This is the one definition of what the variables hold: `variables.ts`
+ * substitutes against it and the tool policy (policy.ts) matches against it.
  */
 export interface PathVariables {
 	/** Main checkout root, shared by every worktree. */
 	repo: string;
 	/** Toplevel of the worktree the command runs in. */
 	worktree: string;
-	/** Every worktree root, main checkout first. */
+	/** Every worktree root, main checkout first. Falls back to `[worktree]`. */
 	worktrees: string[];
 }
 

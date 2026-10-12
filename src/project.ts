@@ -19,9 +19,9 @@
  */
 
 import { execFile } from "node:child_process";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { readdirSync, realpathSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
