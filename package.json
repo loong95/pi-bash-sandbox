@@ -1,6 +1,6 @@
 {
   "name": "pi-bash-sandbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "bubblewrap-based sandboxed bash tool for pi: per-project, stateless, config-driven",
   "license": "MIT",
