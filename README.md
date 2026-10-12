@@ -203,7 +203,10 @@ Worktree directories are machine- and branch-specific, so hard-coding them in
 
 `$worktrees` is multi-valued: one rule expands into one rule per worktree, so
 `allowWrite: ["$worktrees"]` covers every linked worktree, including ones
-created after the session started. Expansion re-runs on every command.
+created after the session started. Expansion re-runs on every command, and the
+resolved worktree set is refreshed as soon as `git worktree add`/`remove`
+touches the repository (a short-lived cache is invalidated by the worktree
+directory's mtime, not only by the TTL).
 
 ```json
 {
@@ -226,15 +229,34 @@ When a repository is detected, the sandbox derives extra rules from the git
 layout. **This needs no configuration**; `/sandbox` reports it as `git guard`.
 
 Two paths inside a git dir are host code execution, because git runs them
-*outside* the sandbox on the next command: `.git/config` (via `core.hooksPath`)
-and the hooks directory. Guards cover those, plus `config.worktree`, `info`,
-every sibling worktree's private gitdir, and every worktree's `.git` pointer
-file, so one worktree cannot damage another's `HEAD`/`index` or repoint a
-gitdir pointer. Guards are emitted as `denyWrite`, so they win over any
-`allowWrite`, including `$repo` and `$worktrees`.
+*outside* the sandbox on the next command: `.git/config` / `config.worktree`
+(via `core.hooksPath`) and the hooks directory. Guards cover those, plus
+`info`, every sibling worktree's private gitdir, the main checkout's
+`HEAD`/`index`/`ORIG_HEAD`, and every worktree's `.git` pointer file, so one
+worktree cannot damage another's state or repoint a gitdir pointer. Guards are
+emitted as `denyWrite`, so they win over any `allowWrite`, including `$repo`
+and `$worktrees`.
 
-Referencing a git variable additionally opens the store a commit needs: the
-worktree's private gitdir plus the shared `objects`, `refs`, and `logs`. Without
+Three cases are easy to get wrong, and are handled explicitly:
+
+- **Every hooks candidate.** A relative `core.hooksPath` (the husky default,
+  `.husky/_`) resolves against whichever cwd git runs in, so the host may
+  execute a hook from a different directory than this command would resolve.
+  Every candidate is guarded, not just the current one.
+- **Paths that do not exist yet.** bwrap creates the destination of a bind, so
+  read-only-binding a missing file leaves a 0-byte artifact on the host — and
+  for a missing *directory* it leaves a file, which breaks a later `mkdir -p`.
+  Such paths are masked instead (`tmpfs` for a directory, `/dev/null` for a
+  file). `config.worktree` is masked when absent but only while
+  `extensions.worktreeConfig` is on, since otherwise git never reads it.
+- **Symlinks.** Guards record realpath-resolved paths, because the tool policy
+  canonicalizes its targets. A lexically recorded guard would miss a symlinked
+  `.git/config` and let the `write` tool through.
+
+Referencing a git variable in `allowWrite` additionally opens the store a
+commit needs: the worktree's private gitdir plus the shared `objects`, `refs`,
+and `logs`. This is opt-in, and only `allowWrite` counts — mentioning
+`$worktrees` in `denyWrite` cannot silently widen what may be written. Without
 a git variable nothing is opened, so a config of literal paths cannot commit
 from a linked worktree.
 
@@ -246,11 +268,11 @@ flowchart TD
   D --> E["git guard (denyWrite)<br/>config, hooks, info,<br/>sibling gitdirs, .git files"]
 ```
 
-Guards only name paths that already exist: `bwrap` creates the destination of a
-bind, so guarding a missing file would leave a 0-byte artifact on the host, and
-an empty `commondir` makes git fail outright. `git worktree add` is deliberately
-*not* opened — it would require writable `config`, which is the hook-execution
-vector. Create worktrees with git itself.
+Guards only name paths that already exist, except where creating them would be
+a vector: `config.worktree` (while `extensions.worktreeConfig` is on) and a
+hooks directory that does not exist yet are masked rather than read-only bound.
+`git worktree add` is deliberately *not* opened — it would require writable
+`config`, which is the hook-execution vector. Create worktrees with git itself.
 
 ### Tool policy semantics
 

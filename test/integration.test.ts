@@ -394,3 +394,77 @@ test("main checkout: .git/config and hooks are read-only, commit still works", {
 	assert.equal(result.stdout.includes("LEAK"), false, result.stdout);
 	assert.equal(existsSync(join(hooksDir, "post-commit")), false);
 });
+
+test("worktree: a missing hooks dir cannot be created (relative core.hooksPath)", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	// husky-style config: relative hooksPath, resolved against the worktree.
+	execFileSync("git", ["-C", main, "config", "core.hooksPath", ".husky/_"], { stdio: "pipe" });
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		[
+			`mkdir -p ${worktree}/.husky/_ && echo DIR_OK || echo dir_blocked`,
+			`echo pwn > ${worktree}/.husky/_/post-commit && echo HOOK_LEAK || echo hook_blocked`,
+		].join("; "),
+	);
+	const result = run(args);
+	assert.equal(result.stdout.includes("HOOK_LEAK"), false, result.stdout);
+	assert.match(result.stdout, /hook_blocked/);
+});
+
+test("worktree: config.worktree cannot redirect hooks when the extension is on", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+	execFileSync("git", ["-C", main, "config", "extensions.worktreeConfig", "true"], { stdio: "pipe" });
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		`git config --worktree core.hooksPath ${worktree}/evilhooks && echo REDIRECTED || echo blocked`,
+	);
+	const result = run(args);
+	assert.equal(result.stdout.includes("REDIRECTED"), false, result.stdout);
+	assert.match(result.stdout, /blocked/);
+});
+
+test("worktree: the main checkout HEAD and index are protected", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		[
+			`echo 'ref: refs/heads/feature' > ${main}/.git/HEAD && echo HEAD_LEAK || echo head_blocked`,
+			`rm -f ${main}/.git/index && echo IDX_LEAK || echo idx_blocked`,
+		].join("; "),
+	);
+	const result = run(args);
+	assert.equal(result.stdout.includes("LEAK"), false, result.stdout);
+	assert.match(result.stdout, /head_blocked/);
+	assert.match(result.stdout, /idx_blocked/);
+});
+
+test("worktree: a worktree created after the first resolution is writable", { skip }, async () => {
+	const { main, worktree } = worktreeProject();
+	mkdirSync(join(worktree, ".pi"), { recursive: true });
+
+	// Resolve once, then add a worktree, then resolve again in the same process.
+	const first = await resolveProjectRoot(worktree, { ttlMs: 60_000 });
+	assert.equal(first.git?.worktrees.length, 2);
+
+	const added = join(main, "..", "late");
+	execFileSync("git", ["-C", main, "worktree", "add", "-q", added, "-b", "late"], { stdio: "pipe" });
+	writeFileSync(join(added, "late.txt"), "x\n");
+
+	const args = await buildArgsFor(
+		worktree,
+		{ filesystem: { allowWrite: ["$worktrees"] } },
+		`echo edited >> ${join(added, "late.txt")}`,
+	);
+	const result = run(args);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(readFileSync(join(added, "late.txt"), "utf-8"), "x\nedited\n");
+});

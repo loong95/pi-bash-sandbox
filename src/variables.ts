@@ -30,12 +30,6 @@ export interface PathVariableContext {
 	worktrees: string[];
 }
 
-export const PATH_VARIABLE_NAMES = ["repo", "worktree", "worktrees"] as const;
-export type PathVariableName = (typeof PATH_VARIABLE_NAMES)[number];
-
-/** The multi-valued variable; a rule using it produces one rule per worktree. */
-export const MULTI_VALUE_VARIABLE: PathVariableName = "worktrees";
-
 interface Token {
 	literal?: string;
 	variable?: string;
@@ -85,11 +79,6 @@ function variableValues(name: string, context: PathVariableContext): string[] | 
 		default:
 			return null;
 	}
-}
-
-/** True when the rule references any `$variable` (including unknown ones). */
-export function hasVariables(rule: string): boolean {
-	return tokenize(rule).some((token) => token.variable !== undefined);
 }
 
 /** True when the rule references at least one known variable. */

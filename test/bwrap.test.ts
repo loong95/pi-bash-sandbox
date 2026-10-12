@@ -232,3 +232,53 @@ test("stdin command transport omits the command from argv", () => {
 	assert.deepEqual(args.slice(-2), ["/bin/bash", "-c"]);
 	assert.equal(args.includes("echo hi"), false);
 });
+
+test("denyCreate: dir -> tmpfs + remount-ro, file -> /dev/null", () => {
+	const args = buildBwrapArgs({
+		command: "true",
+		cwd: "/p",
+		env: {},
+		config: makeConfig({
+			denyCreate: [
+				{ path: "/p/.husky/_", isDir: true, rule: "$git" },
+				{ path: "/p/.git/worktrees/w/config.worktree", isDir: false, rule: "$git" },
+			],
+		}),
+		capabilities: CAPS,
+		shell: SHELL,
+	});
+
+	// A directory is masked with tmpfs: binding /dev/null would leave a *file*
+	// artifact that makes a later `mkdir -p` fail on the host.
+	const dirIndex = args.findIndex((value, i) => value === "--tmpfs" && args[i + 1] === "/p/.husky/_");
+	assert.ok(dirIndex !== -1);
+	assert.deepEqual(args.slice(dirIndex, dirIndex + 4), [
+		"--tmpfs",
+		"/p/.husky/_",
+		"--remount-ro",
+		"/p/.husky/_",
+	]);
+
+	const fileIndex = args.findIndex(
+		(value, i) =>
+			value === "--ro-bind" && args[i + 1] === "/dev/null" && args[i + 2] === "/p/.git/worktrees/w/config.worktree",
+	);
+	assert.ok(fileIndex !== -1);
+});
+
+test("denyCreate is applied after allowWrite, so it cannot be undone", () => {
+	const args = buildBwrapArgs({
+		command: "true",
+		cwd: "/p",
+		env: {},
+		config: makeConfig({
+			allowWrite: [dir("/p")],
+			denyCreate: [{ path: "/p/.husky/_", isDir: true, rule: "$git" }],
+		}),
+		capabilities: CAPS,
+		shell: SHELL,
+	});
+	const allow = args.findIndex((value, i) => value === "--bind" && args[i + 1] === "/p");
+	const deny = args.findIndex((value, i) => value === "--tmpfs" && args[i + 1] === "/p/.husky/_");
+	assert.ok(allow !== -1 && deny !== -1 && deny > allow);
+});

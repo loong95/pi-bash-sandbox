@@ -190,7 +190,8 @@ worktree 目录跟机器、分支都相关，硬编码进 `sandbox.json` 不可�
 
 `$worktrees` 是多值的：一条规则展开成每个 worktree 一条，所以
 `allowWrite: ["$worktrees"]` 一次覆盖所有 linked worktree，**包括会话启动后才新建的**
-（每条命令都重新展开）。
+（每条命令都重新展开；worktree 集合的缓存会被 `git worktree add`/`remove` 改动的目录 mtime
+立即失效，不必等 TTL 到期）。
 
 ```json
 {
@@ -210,14 +211,26 @@ worktree 目录跟机器、分支都相关，硬编码进 `sandbox.json` 不可�
 检测到 git 仓库时，沙箱会从 git 布局自动推导额外规则。**无需配置**，`/sandbox` 会以 `git guard` 展示。
 
 git 目录里有两个路径等同于宿主机代码执行，因为 git 会在沙箱**之外**执行它们：
-`.git/config`（通过 `core.hooksPath`）和 hooks 目录。保护层覆盖这两者，另加
-`config.worktree`、`info`、每个兄弟 worktree 的私有 gitdir、以及每个 worktree 的 `.git` 指针文件，
-使得一个 worktree 无法破坏另一个的 `HEAD`/`index`，也无法重定向 gitdir 指针。
+`.git/config` / `config.worktree`（通过 `core.hooksPath`）和 hooks 目录。保护层覆盖这两者，另加
+`info`、每个兄弟 worktree 的私有 gitdir、主 checkout 的 `HEAD`/`index`/`ORIG_HEAD`、
+以及每个 worktree 的 `.git` 指针文件，使得一个 worktree 无法破坏另一个的状态，也无法重定向 gitdir 指针。
 保护以 `denyWrite` 下发，因此**优先于**任何 `allowWrite`，包括 `$repo` 和 `$worktrees`。
 
+三种容易做错的情况都已显式处理：
+
+- **所有 hooks 候选。** 相对的 `core.hooksPath`（husky 默认的 `.husky/_`）按 git 运行时的 cwd 解析，
+  因此宿主机可能执行到与本条命令不同的目录。保护层覆盖每个候选，而不只是当前这一个。
+- **尚不存在的路径。** `bwrap` 会创建 bind 的目标，所以对不存在的文件做只读绑定会在宿主机留下 0 字节残留；
+  对不存在的**目录**则会留下一个文件，导致之后的 `mkdir -p` 失败。这类路径改为**遮蔽**
+  （目录用 `tmpfs`，文件用 `/dev/null`）。`config.worktree` 仅在
+  `extensions.worktreeConfig` 打开时才遮蔽（否则 git 根本不会读它）。
+- **符号链接。** 保护记录的是 realpath 解析后的路径，因为工具策略会对目标做归一化；
+  若按字面路径记录，符号链接的 `.git/config` 就会被漏掉，`write` 工具即可穿透。
+
 引用 git 变量时，还会额外打开提交所必需的 git 存储：worktree 的私有 gitdir
-以及共享的 `objects`、`refs`、`logs`。若不用任何 git 变量，则什么都不打开，
-纯字面量路径的配置在 linked worktree 里无法提交。
+以及共享的 `objects`、`refs`、`logs`。这是选择性开放，且**只认 `allowWrite`**——
+在 `denyWrite` 里提到 `$worktrees` 不会意外放宽可写范围。
+若不用任何 git 变量，则什么都不打开，纯字面量路径的配置在 linked worktree 里无法提交。
 
 ```mermaid
 flowchart TD
@@ -227,9 +240,9 @@ flowchart TD
   D --> E["git 保护（denyWrite）<br/>config, hooks, info,<br/>兄弟 gitdir, .git 指针"]
 ```
 
-保护层只列举**已存在**的路径：`bwrap` 会创建 bind 的目标，保护一个不存在的文件会在宿主机上
-留下 0 字节残留，而空的 `commondir` 会直接让 git 报错。`git worktree add` 故意**不**放开
-——它需要可写的 `config`，而那正是 hook 执行通道。请用 git 本身创建 worktree。
+保护层只列举**已存在**的路径，除非创建它们本身就是攻击面：
+`config.worktree`（`extensions.worktreeConfig` 打开时）和尚未存在的 hooks 目录会改为遮蔽而非只读绑定。
+`git worktree add` 故意**不**放开——它需要可写的 `config`，而那正是 hook 执行通道。请用 git 本身创建 worktree。
 
 ### 工具策略语义
 

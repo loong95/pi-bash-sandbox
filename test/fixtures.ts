@@ -6,7 +6,6 @@
  * means adding a field to the resolved type does not break four test files.
  */
 
-import { realpathSync } from "node:fs";
 import type {
 	ConfigSources,
 	PathVariables,
@@ -21,6 +20,7 @@ export const NO_GIT_GUARD: ResolvedGitGuard = {
 	gitDir: null,
 	writable: [],
 	readOnly: [],
+	blockCreate: [],
 };
 
 export function makeVariables(input: Partial<PathVariables> = {}): PathVariables {
@@ -60,14 +60,11 @@ export function makeResolvedConfig(
 		onUnavailable: "error",
 		extraBwrapArgs: [],
 		rules: { allowWrite: [], denyWrite: [], denyRead: [] },
+		denyCreate: [],
 		variables: makeVariables({ repo: sources.projectRoot, worktree: sources.worktreeRoot }),
 		gitGuard: NO_GIT_GUARD,
 		tools: { enabled: true, requireAllowWrite: true },
 		sources,
 		...overrides,
 	};
-}
-
-export function realDir(): string {
-	return realpathSync(process.cwd());
 }

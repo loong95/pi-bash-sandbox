@@ -67,6 +67,13 @@ export interface PathVariables {
 	worktrees: string[];
 }
 
+/** A path that must not be created, plus how to mask it in the mount layer. */
+export interface GitBlockCreate {
+	path: string;
+	/** True when the path is a directory (mask with tmpfs); false masks with `/dev/null`. */
+	isDir: boolean;
+}
+
 /** Auto-injected git protection, surfaced by `/sandbox` for diagnostics. */
 export interface ResolvedGitGuard {
 	/** True when a git repository was detected. */
@@ -81,6 +88,12 @@ export interface ResolvedGitGuard {
 	writable: string[];
 	/** Paths kept read-only even when allowWrite covers the repo (added to denyWrite). */
 	readOnly: string[];
+	/**
+	 * Paths that do not exist yet but must not be *created*, because git would
+	 * read them once created (e.g. `config.worktree` with worktreeConfig on).
+	 * Masked in the mount layer rather than read-only self-bound.
+	 */
+	blockCreate: GitBlockCreate[];
 }
 
 export interface ResolvedEnvConfig {
@@ -127,7 +140,12 @@ export interface ResolvedSandboxConfig {
 	extraBwrapArgs: string[];
 	/** Raw rules for the tool_call policy matcher (globs are not pre-expanded). */
 	rules: RawPathRules;
-	/** Resolved `$repo` / `$worktree` / `$worktrees` values. */
+	/**
+	 * Paths that must not be *created*. Distinct from `denyWrite`, which
+	 * read-only self-binds an existing path: these do not exist yet, so they are
+	 * masked instead (tmpfs for a directory, `/dev/null` for a file).
+	 */
+	denyCreate: ResolvedPath[];	/** Resolved `$repo` / `$worktree` / `$worktrees` values. */
 	variables: PathVariables;
 	/** Automatic git protection layer derived from the repository layout. */
 	gitGuard: ResolvedGitGuard;

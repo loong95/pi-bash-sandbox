@@ -3,7 +3,6 @@ import test from "node:test";
 import {
 	expandVariables,
 	findUnknownVariables,
-	hasVariables,
 	pathVariableContext,
 	usesKnownVariable,
 } from "../src/variables.ts";
@@ -69,12 +68,12 @@ test("unknown variables are preserved verbatim so the rule never matches", () =>
 	assert.deepEqual(findUnknownVariables("$repo/$nope/x"), ["nope"]);
 });
 
-test("hasVariables and usesKnownVariable distinguish unknown references", () => {
-	assert.equal(hasVariables("$repo"), true);
-	assert.equal(hasVariables("$bogus"), true);
-	assert.equal(hasVariables("/plain"), false);
+test("usesKnownVariable distinguishes known from unknown references", () => {
 	assert.equal(usesKnownVariable("$repo"), true);
+	assert.equal(usesKnownVariable("$worktree"), true);
+	assert.equal(usesKnownVariable("$worktrees"), true);
 	assert.equal(usesKnownVariable("$bogus"), false);
+	assert.equal(usesKnownVariable("/plain"), false);
 	assert.equal(usesKnownVariable("$bogus/$worktrees"), true);
 });
 

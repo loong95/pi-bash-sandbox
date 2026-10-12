@@ -14,10 +14,10 @@
 
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as resolvePath } from "node:path";
-import type { GitLayout } from "./project.ts";
-import type {
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
+import type { GitLayout } from "./project.ts";import type {
 	ConfigSources,
+	GitBlockCreate,
 	NetworkMode,
 	PathVariables,
 	ResolvedGitGuard,
@@ -27,7 +27,7 @@ import type {
 	TmpMode,
 	UnavailablePolicy,
 } from "./types.ts";
-import { expandVariables, pathVariableContext, usesKnownVariable } from "./variables.ts";
+import { expandVariables, findUnknownVariables, pathVariableContext, usesKnownVariable } from "./variables.ts";
 import type { PathVariableContext } from "./variables.ts";
 
 export const CONFIG_DIR_NAME = ".pi";
@@ -408,6 +408,10 @@ function expandRuleWithVariables(
 	context: PathVariableContext,
 	warnings: string[],
 ): ResolvedPath[] {
+	const unknown = findUnknownVariables(rule);
+	if (unknown.length > 0) {
+		warnings.push(`${rule}: unknown variable(s) ${unknown.map((name) => `$${name}`).join(", ")}; rule will not match`);
+	}
 	return expandVariables(rule, context).flatMap((expanded) => expandRule(expanded, cwd, warnings));
 }
 
@@ -424,6 +428,39 @@ function dedupPaths(paths: ResolvedPath[]): ResolvedPath[] {
 
 function dedupStrings(values: string[]): string[] {
 	return [...new Set(values)];
+}
+
+/** Resolve symlinks when possible, so guards match the policy's canonicalized targets. */
+function safeRealpath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
+/**
+ * Resolve a path that may not exist yet, by resolving its parent directory.
+ * Mirrors `normalizeTarget` in policy.ts, so a guard recorded here matches the
+ * target the tool policy computes for the same (not-yet-created) path.
+ */
+function resolveForGuard(path: string): string {
+	if (existsSync(path)) return safeRealpath(path);
+	try {
+		return join(realpathSync(dirname(path)), basename(path));
+	} catch {
+		return path;
+	}
+}
+
+/** Dedup by path, preferring the entry that knows it is a directory. */
+function dedupBlockCreate(entries: GitBlockCreate[]): GitBlockCreate[] {
+	const byPath = new Map<string, GitBlockCreate>();
+	for (const entry of entries) {
+		const existing = byPath.get(entry.path);
+		if (!existing || (entry.isDir && !existing.isDir)) byPath.set(entry.path, entry);
+	}
+	return [...byPath.values()];
 }
 
 /** True for a regular file; false for a directory, missing path, or error. */
@@ -443,50 +480,85 @@ function isFile(path: string): boolean {
  * Automatic git protection, applied whenever a repository is detected.
  *
  * `bash` is wrapped by bwrap, so a writable `allowWrite` path is a real write
- * capability. Two paths inside a git dir turn that into host code execution,
+ * capability. Paths inside a git dir turn that into host code execution,
  * because git executes them *outside* the sandbox on the next command:
  *
- * - `.git/config` (`core.hooksPath` redirect)
- * - the hooks directory
+ * - `.git/config` and `config.worktree` (a `core.hooksPath` redirect)
+ * - any hooks directory git may use
  *
  * Everything else here prevents cross-worktree damage: one worktree must not
- * rewrite another worktree's `HEAD`/`index`, nor repoint a gitdir pointer
- * (`commondir`, `gitdir`, or the `.git` file) at an attacker-chosen directory.
+ * rewrite another's `HEAD`/`index`, nor repoint a gitdir pointer (`commondir`,
+ * `gitdir`, or the `.git` file) at an attacker-chosen directory.
  *
  * Guards are emitted as `denyWrite` (a read-only self-bind) so they win over
  * any `allowWrite` rule, including `$repo`/`$worktrees`.
  *
- * Only *existing* paths are guarded: bwrap creates the destination of a bind,
- * so guarding a missing file would leave a 0-byte artifact on the host. An
- * empty `commondir`/`gitdir` makes git fail outright, so a stray artifact is
- * worse than the gap it closes.
+ * Two subtleties are load-bearing:
+ *
+ * - **Every path is realpath-resolved.** The tool policy canonicalizes targets
+ *   (`normalizeTarget`), so a guard recorded lexically would not match a
+ *   symlinked `.git/config`. Resolving here keeps the mount layer and the
+ *   policy layer agreeing on the same path.
+ * - **Missing paths are only guarded when git would actually read them.**
+ *   bwrap creates the destination of a bind, so guarding a missing file leaves
+ *   a 0-byte artifact on the host; an empty `commondir`/`gitdir` makes git fail
+ *   outright. `config.worktree` is the exception: it is only read when
+ *   `extensions.worktreeConfig` is on, and an empty file there is harmless, so
+ *   it is worth blocking *creation* to close the redirect vector.
  */
 export function buildGitGuard(git: GitLayout | null | undefined): ResolvedGitGuard {
-	if (!git) return { detected: false, active: false, commonDir: null, gitDir: null, writable: [], readOnly: [] };
+	if (!git) {
+		return { detected: false, active: false, commonDir: null, gitDir: null, writable: [], readOnly: [], blockCreate: [] };
+	}
 
 	const readOnly: string[] = [];
-	const add = (path: string | null | undefined): void => {
-		if (path && existsSync(path)) readOnly.push(path);
+	const blockCreate: GitBlockCreate[] = [];
+
+	/** Guard an existing path; a missing one is only blocked when told to. */
+	const add = (
+		path: string | null | undefined,
+		options: { blockIfMissing?: boolean; isDir?: boolean } = {},
+	): void => {
+		if (!path) return;
+		if (existsSync(path)) {
+			readOnly.push(safeRealpath(path));
+		} else if (options.blockIfMissing) {
+			blockCreate.push({ path: resolveForGuard(path), isDir: options.isDir ?? false });
+		}
 	};
 
 	// Shared config and hooks: writable here means code execution on the host.
+	// `config.worktree` is blocked even when absent, but only when git would read
+	// it; otherwise a 0-byte artifact would appear in every repo for nothing.
 	add(join(git.commonDir, "config"));
-	add(join(git.commonDir, "config.worktree"));
-	if (git.hooksDir) add(git.hooksDir);
+	add(join(git.commonDir, "config.worktree"), { blockIfMissing: git.worktreeConfigEnabled });
+	// A hooks directory that does not exist yet is still a vector: git reads it
+	// once created, and a relative `core.hooksPath` (`.husky/_`) resolves inside
+	// a writable worktree. Blocking creation is the only way to cover it.
+	for (const hooksDir of git.hooksDirs) add(hooksDir, { blockIfMissing: true, isDir: true });
 	add(join(git.commonDir, "info"));
 
-	// Pointer files in our own gitdir. These exist for linked worktrees only;
-	// the main checkout has no `commondir`, and creating one would break it.
+	// Every worktree's private gitdir. Guarding a sibling wholesale covers its
+	// `HEAD`, `index`, and pointer files in one mount.
+	for (const sibling of git.siblingGitDirs) add(sibling);
+
 	if (git.gitDir !== git.commonDir) {
+		// Our own pointer files: rewriting them repoints the gitdir.
 		add(join(git.gitDir, "commondir"));
 		add(join(git.gitDir, "gitdir"));
-		add(join(git.gitDir, "config.worktree"));
+		add(join(git.gitDir, "config.worktree"), { blockIfMissing: git.worktreeConfigEnabled });
+		// The main checkout's metadata lives in the common dir, which `$repo` /
+		// `$worktrees` make writable. This branch only runs for a *linked*
+		// worktree, whose own HEAD/index live in `gitDir`, so guarding the main
+		// checkout's copy cannot break the command being run.
+		add(join(git.commonDir, "HEAD"));
+		add(join(git.commonDir, "index"));
+		add(join(git.commonDir, "ORIG_HEAD"));
 	}
 
-	// Every other worktree's private gitdir, and every worktree's `.git`
-	// pointer *file*. The main checkout's `.git` is a directory holding the
-	// shared store; guarding it would undo the writable binds above.
-	for (const sibling of git.siblingGitDirs) add(sibling);
+	// Every worktree's `.git` pointer *file*. The main checkout's `.git` is a
+	// directory holding the shared store; guarding it would undo the writable
+	// binds above.
 	for (const worktree of git.worktrees) {
 		const pointer = join(worktree, ".git");
 		if (isFile(pointer)) add(pointer);
@@ -499,6 +571,7 @@ export function buildGitGuard(git: GitLayout | null | undefined): ResolvedGitGua
 		gitDir: git.gitDir,
 		writable: [],
 		readOnly: dedupStrings(readOnly),
+		blockCreate: dedupBlockCreate(blockCreate),
 	};
 }
 
@@ -592,11 +665,10 @@ function normalize(
 	// The read-only guards are unconditional: they only ever *remove* write
 	// access that a broad allowWrite (`.`, `$repo`, `$worktrees`) would
 	// otherwise grant, so applying them when nothing is granted is a harmless
-	// no-op. Opening the git store is the opt-in half — only a rule that
-	// references a git variable unlocks it.
-	const gitEnabled =
-		gitGuard.detected &&
-		(usesGitVariables(merged.filesystem?.allowWrite) || usesGitVariables(merged.filesystem?.denyWrite));
+	// no-op. Opening the git store is the opt-in half — and only an *allowWrite*
+	// variable opts in, so mentioning `$worktrees` in denyWrite cannot silently
+	// widen what the sandbox may write.
+	const gitEnabled = gitGuard.detected && usesGitVariables(merged.filesystem?.allowWrite);
 
 	const allowWrite = expandAll(merged.filesystem?.allowWrite);
 	const denyWrite = expandAll(merged.filesystem?.denyWrite);
@@ -631,12 +703,26 @@ function normalize(
 		if (!rawDenyWrite.includes(path.path)) rawDenyWrite.push(path.path);
 	}
 
+	// Paths that do not exist yet are masked rather than read-only bound, and
+	// they cannot be expressed as a denyWrite *rule* (a rule matches by name, not
+	// by "does not exist"). The tool policy still needs to refuse writing them,
+	// so they are appended as exact raw rules too.
+	const denyCreate: ResolvedPath[] = gitGuard.blockCreate.map((entry) => ({
+		path: entry.path,
+		isDir: entry.isDir,
+		rule: "$git",
+	}));
+	for (const entry of denyCreate) {
+		if (!rawDenyWrite.includes(entry.path)) rawDenyWrite.push(entry.path);
+	}
+
 	const env = merged.env ?? {};
 	return {
 		enabled: merged.enabled ?? true,
 		network: merged.network ?? "none",
 		allowWrite: [...allowWrite, ...gitWritable],
 		denyWrite: [...denyWrite, ...gitReadOnly],
+		denyCreate,
 		denyRead: expandAll(merged.filesystem?.denyRead),
 		tmp: merged.tmp ?? "private",
 		env: {
@@ -661,6 +747,7 @@ function normalize(
 			gitDir: gitGuard.gitDir,
 			writable: gitWritable.map((path) => path.path),
 			readOnly: gitReadOnly.map((path) => path.path),
+			blockCreate: gitGuard.blockCreate,
 		},
 		tools: {
 			enabled: merged.tools?.enabled ?? true,

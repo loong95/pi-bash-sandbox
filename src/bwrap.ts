@@ -63,6 +63,19 @@ export function buildBwrapArgs(input: BuildBwrapInput): string[] {
 		args.push("--ro-bind", path.path, path.path);
 	}
 
+	// denyCreate: the path does not exist yet, so it is masked rather than
+	// self-bound. A directory needs tmpfs (binding /dev/null would leave a
+	// *file* artifact that makes a later `mkdir -p` fail); a file uses
+	// /dev/null, which blocks creation without breaking the parent directory.
+	for (const path of config.denyCreate) {
+		if (path.isDir) {
+			args.push("--tmpfs", path.path);
+			args.push("--remount-ro", path.path);
+		} else {
+			args.push("--ro-bind", "/dev/null", path.path);
+		}
+	}
+
 	// denyRead wins over denyWrite when a path appears in both.
 	for (const path of config.denyRead) {
 		if (path.isDir) {

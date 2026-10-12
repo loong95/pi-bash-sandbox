@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -348,9 +348,11 @@ function realGitLayout(): { root: string; main: string; worktree: string; git: G
 		git: {
 			commonDir,
 			gitDir,
-			hooksDir: join(commonDir, "hooks"),
+			mainCheckout: realpathSync(main),
 			worktrees: [realpathSync(main), realpathSync(worktree)],
 			siblingGitDirs: [],
+			hooksDirs: [join(commonDir, "hooks")],
+			worktreeConfigEnabled: false,
 		},
 	};
 }
@@ -532,4 +534,151 @@ test("git guards also reach the tool policy, not just bwrap", () => {
 	assert.ok(cfg.rules.denyWrite.includes(join(git.commonDir, "config")));
 	assert.ok(cfg.rules.denyWrite.includes(join(git.commonDir, "hooks")));
 	assert.ok(cfg.rules.denyWrite.includes(join(git.gitDir, "commondir")));
+});
+
+// ---------------------------------------------------------------------------
+// Git guard hardening (review findings)
+// ---------------------------------------------------------------------------
+
+test("git guard blocks creating a missing hooks dir (relative core.hooksPath)", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	// husky-style: relative path, resolved per worktree, directory not created yet.
+	const hooksPath = join(worktree, ".husky", "_");
+	const withHooks = {
+		...git,
+		hooksDirs: [join(git.commonDir, "hooks"), hooksPath],
+	};
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git: withHooks,
+	});
+
+	// A directory that does not exist must be masked with tmpfs, not /dev/null:
+	// binding /dev/null would leave a *file* artifact that breaks a later mkdir.
+	const blocked = cfg.denyCreate.find((entry) => entry.path === hooksPath);
+	assert.ok(blocked, `expected ${hooksPath} in denyCreate`);
+	assert.equal(blocked.isDir, true);
+});
+
+test("git guard blocks config.worktree only when worktreeConfig is enabled", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+	const input = {
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+	};
+
+	const off = loadSandboxConfig({ ...input, git: { ...git, worktreeConfigEnabled: false } });
+	assert.equal(off.denyCreate.some((entry) => entry.path.endsWith("config.worktree")), false);
+
+	const on = loadSandboxConfig({ ...input, git: { ...git, worktreeConfigEnabled: true } });
+	assert.ok(on.denyCreate.some((entry) => entry.path === join(git.gitDir, "config.worktree")));
+});
+
+test("git guard protects the main checkout HEAD/index from a linked worktree", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	const readOnly = cfg.gitGuard.readOnly;
+	assert.ok(readOnly.includes(join(git.commonDir, "HEAD")));
+	assert.ok(readOnly.includes(join(git.commonDir, "index")));
+});
+
+test("the main checkout does not guard its own HEAD (it must be able to commit)", () => {
+	clearConfigCache();
+	const { main, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["."] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: main,
+		cwd: main,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git: { ...git, gitDir: git.commonDir },
+	});
+
+	assert.equal(cfg.gitGuard.readOnly.includes(join(git.commonDir, "HEAD")), false);
+	assert.equal(cfg.gitGuard.readOnly.includes(join(git.commonDir, "index")), false);
+});
+
+test("a symlinked git config is guarded by its resolved path", () => {
+	clearConfigCache();
+	const { root, main, worktree, git } = realGitLayout();
+	const realConfig = join(root, "managed-gitconfig");
+	writeFileSync(realConfig, "[core]\n");
+	rmSync(join(git.commonDir, "config"));
+	symlinkSync(realConfig, join(git.commonDir, "config"));
+
+	writeConfig(main, { filesystem: { allowWrite: ["$worktrees"] } });
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	// The tool policy canonicalizes targets, so the guard must be the resolved
+	// path or the two layers disagree and `write` slips through.
+	assert.ok(cfg.rules.denyWrite.includes(realpathSync(realConfig)));
+});
+
+test("a deny-only git variable does not open the git store", () => {
+	clearConfigCache();
+	const { main, worktree, git } = realGitLayout();
+	writeConfig(main, { filesystem: { allowWrite: ["."], denyWrite: ["$worktrees/secret"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: main,
+		worktreeRoot: worktree,
+		cwd: worktree,
+		projectTrusted: true,
+		agentDir: join(main, "agent"),
+		git,
+	});
+
+	assert.equal(cfg.gitGuard.active, false);
+	assert.equal(cfg.gitGuard.writable.length, 0);
+});
+
+test("an unknown path variable is warned about and never matches", () => {
+	clearConfigCache();
+	const root = tempDir();
+	const project = join(root, "proj");
+	mkdirSync(project, { recursive: true });
+	writeConfig(project, { filesystem: { allowWrite: ["$bogus"] } });
+
+	const cfg = loadSandboxConfig({
+		projectRoot: project,
+		worktreeRoot: project,
+		cwd: project,
+		projectTrusted: true,
+		agentDir: join(root, "agent"),
+	});
+
+	assert.deepEqual(cfg.allowWrite, []);
+	assert.ok(cfg.sources.warnings.some((warning) => warning.includes("$bogus")));
 });

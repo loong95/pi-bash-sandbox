@@ -44,7 +44,7 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 
 	if (config.gitGuard.active) {
 		lines.push(
-			`git guard: common=${config.gitGuard.commonDir} gitdir=${config.gitGuard.gitDir} (+${config.gitGuard.writable.length} writable, ${config.gitGuard.readOnly.length} read-only)`,
+			`git guard: common=${config.gitGuard.commonDir} gitdir=${config.gitGuard.gitDir} (+${config.gitGuard.writable.length} writable, ${config.gitGuard.readOnly.length} read-only, ${config.gitGuard.blockCreate.length} blocked-create)`,
 		);
 	}
 	lines.push(`variables: repo=${config.variables.repo} worktree=${config.variables.worktree}`);
