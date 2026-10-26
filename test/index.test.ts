@@ -11,6 +11,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import piBashSandbox from "../index.ts";
+import { probeMxc } from "../src/mxc/probe.ts";
 import { probeBwrap } from "../src/probe.ts";
 
 const skip = probeBwrap().available ? false : "bwrap unavailable";
@@ -78,7 +79,7 @@ test("extension registers the bash override, user_bash, and all commands", () =>
 });
 
 test("registered bash tool runs commands inside the sandbox", { skip }, async () => {
-	const project = projectWithConfig({ filesystem: { allowWrite: ["."] } });
+	const project = projectWithConfig({ engine: "bwrap", filesystem: { allowWrite: ["."] } });
 	const { api, tools } = mockPi();
 	piBashSandbox(api);
 
@@ -208,7 +209,7 @@ test("/sandbox-init creates a project config", { skip }, async () => {
 });
 
 test("/sandbox-test prints the bwrap argv without executing", { skip }, async () => {
-	const project = projectWithConfig({ network: "none" });
+	const project = projectWithConfig({ engine: "bwrap", network: "none" });
 	const notifications: string[] = [];
 	const { api, commands } = mockPi();
 	piBashSandbox(api);
@@ -217,6 +218,19 @@ test("/sandbox-test prints the bwrap argv without executing", { skip }, async ()
 	assert.match(notifications[0], /sandbox: enabled/);
 	assert.match(notifications[0], /--unshare-net/);
 	assert.match(notifications[0], /--clearenv/);
+	assert.match(notifications[0], /echo hi/);
+});
+
+test("/sandbox-test prints the MXC request when MXC is available", { skip: skip || !probeMxc().available ? "MXC unavailable" : false }, async () => {
+	const project = projectWithConfig({ engine: "mxc", network: "none" });
+	const notifications: string[] = [];
+	const { api, commands } = mockPi();
+	piBashSandbox(api);
+
+	await commands.get("sandbox-test")?.handler("echo hi", mockCtx(project, notifications));
+	assert.match(notifications[0], /engine: mxc/);
+	assert.match(notifications[0], /"version": "1.0.0"/);
+	assert.match(notifications[0], /"containment": "bubblewrap"/);
 	assert.match(notifications[0], /echo hi/);
 });
 

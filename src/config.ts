@@ -18,7 +18,9 @@ import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "nod
 import type { GitLayout } from "./project.ts";
 import type {
 	ConfigSources,
+	EngineMode,
 	GitBlockCreate,
+	MxcBackendChoice,
 	NetworkMode,
 	PathVariables,
 	ResolvedGitGuard,
@@ -42,7 +44,7 @@ export function resolveAgentDir(): string {
 
 export function expandTilde(path: string, home: string = homedir()): string {
 	if (path === "~") return home;
-	if (path.startsWith("~/")) return join(home, path.slice(2));
+	if (path.startsWith("~/") || path.startsWith("~\\")) return join(home, path.slice(2));
 	return path;
 }
 
@@ -52,6 +54,14 @@ export function hasGlob(path: string): boolean {
 
 export const DEFAULT_CONFIG: SandboxConfigFile = {
 	enabled: true,
+	engine: "auto",
+	mxc: {
+		backend: "auto",
+		shell: "busybox",
+		extraReadwritePaths: [],
+		extraReadonlyPaths: [],
+		extraDeniedPaths: [],
+	},
 	network: "none",
 	filesystem: {
 		allowWrite: [".", "/tmp"],
@@ -60,7 +70,37 @@ export const DEFAULT_CONFIG: SandboxConfigFile = {
 	},
 	tmp: "private",
 	env: {
-		passthrough: ["PATH", "HOME", "TERM", "LANG", "LC_*", "TMPDIR", "PI_*"],
+		passthrough: [
+			"PATH",
+			"HOME",
+			"TERM",
+			"LANG",
+			"LC_*",
+			"TMPDIR",
+			"PI_*",
+			// Windows shells need the Win32 environment block to initialize.
+			"USERPROFILE",
+			"USERNAME",
+			"USERDOMAIN",
+			"COMPUTERNAME",
+			"SystemRoot",
+			"SystemDrive",
+			"WINDIR",
+			"COMSPEC",
+			"PATHEXT",
+			"TEMP",
+			"TMP",
+			"APPDATA",
+			"LOCALAPPDATA",
+			"PROGRAMDATA",
+			"PROGRAMFILES",
+			"PROGRAMFILES(X86)",
+			"HOMEDRIVE",
+			"HOMEPATH",
+			"NUMBER_OF_PROCESSORS",
+			"PROCESSOR_ARCHITECTURE",
+			"OS",
+		],
 		deny: ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "ANTHROPIC_*", "OPENAI_*"],
 		set: {},
 	},
@@ -108,6 +148,8 @@ export function getConfigPaths(input: {
 const TOP_LEVEL_KEYS = new Set([
 	"replaceGlobalArrays",
 	"enabled",
+	"engine",
+	"mxc",
 	"network",
 	"filesystem",
 	"tmp",
@@ -121,12 +163,24 @@ const TOP_LEVEL_KEYS = new Set([
 const FILESYSTEM_KEYS = new Set(["allowWrite", "denyWrite", "denyRead"]);
 const ENV_KEYS = new Set(["passthrough", "deny", "set"]);
 const TOOLS_KEYS = new Set(["enabled", "requireAllowWrite"]);
+const MXC_KEYS = new Set([
+	"backend",
+	"shell",
+	"busyboxPath",
+	"executorPath",
+	"extraReadwritePaths",
+	"extraReadonlyPaths",
+	"extraDeniedPaths",
+]);
 const MERGEABLE_ARRAY_FIELDS = new Set([
 	"filesystem.allowWrite",
 	"filesystem.denyWrite",
 	"filesystem.denyRead",
 	"env.passthrough",
 	"env.deny",
+	"mxc.extraReadwritePaths",
+	"mxc.extraReadonlyPaths",
+	"mxc.extraDeniedPaths",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -187,6 +241,43 @@ export function validateConfigLayer(raw: unknown, source: string, warnings: stri
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
 		else warnings.push(`enabled: expected boolean, ignoring`);
+	}
+	out.engine = asEnum<EngineMode>(raw.engine, ["auto", "mxc", "bwrap"], "engine", warnings);
+	if (raw.mxc !== undefined) {
+		if (isRecord(raw.mxc)) {
+			warnUnknownKeys(raw.mxc, MXC_KEYS, "mxc.", warnings);
+			const mxc: NonNullable<SandboxConfigFile["mxc"]> = {};
+			mxc.backend = asEnum<MxcBackendChoice>(
+				raw.mxc.backend,
+				["auto", "bubblewrap", "seatbelt", "processcontainer"],
+				"mxc.backend",
+				warnings,
+			);
+			if (raw.mxc.shell !== undefined) {
+				if (typeof raw.mxc.shell === "string" && raw.mxc.shell.length > 0) mxc.shell = raw.mxc.shell;
+				else warnings.push(`mxc.shell: expected a non-empty string, ignoring`);
+			}
+			for (const key of ["busyboxPath", "executorPath"] as const) {
+				const value = raw.mxc[key];
+				if (value === undefined) continue;
+				if (typeof value === "string" && value.length > 0) mxc[key] = value;
+				else warnings.push(`mxc.${key}: expected a non-empty string, ignoring`);
+			}
+			mxc.extraReadwritePaths = asStringArray(
+				raw.mxc.extraReadwritePaths,
+				"mxc.extraReadwritePaths",
+				warnings,
+			);
+			mxc.extraReadonlyPaths = asStringArray(
+				raw.mxc.extraReadonlyPaths,
+				"mxc.extraReadonlyPaths",
+				warnings,
+			);
+			mxc.extraDeniedPaths = asStringArray(raw.mxc.extraDeniedPaths, "mxc.extraDeniedPaths", warnings);
+			out.mxc = mxc;
+		} else {
+			warnings.push(`mxc: expected object, ignoring`);
+		}
 	}
 	out.network = asEnum<NetworkMode>(raw.network, ["none", "host"], "network", warnings);
 	out.tmp = asEnum<TmpMode>(raw.tmp, ["private", "shared"], "tmp", warnings);
@@ -311,6 +402,34 @@ export function mergeConfigLayers(
 
 	return {
 		enabled: pick(p.enabled, g.enabled, defaults.enabled),
+		engine: pick(p.engine, g.engine, defaults.engine),
+		mxc: {
+			backend: pick(p.mxc?.backend, g.mxc?.backend, defaults.mxc?.backend),
+			shell: pick(p.mxc?.shell, g.mxc?.shell, defaults.mxc?.shell),
+			busyboxPath: pick(p.mxc?.busyboxPath, g.mxc?.busyboxPath, defaults.mxc?.busyboxPath),
+			executorPath: pick(p.mxc?.executorPath, g.mxc?.executorPath, defaults.mxc?.executorPath),
+			extraReadwritePaths: mergeArray(
+				"mxc.extraReadwritePaths",
+				p.mxc?.extraReadwritePaths,
+				g.mxc?.extraReadwritePaths,
+				defaults.mxc?.extraReadwritePaths,
+				replaceGlobalArrays,
+			),
+			extraReadonlyPaths: mergeArray(
+				"mxc.extraReadonlyPaths",
+				p.mxc?.extraReadonlyPaths,
+				g.mxc?.extraReadonlyPaths,
+				defaults.mxc?.extraReadonlyPaths,
+				replaceGlobalArrays,
+			),
+			extraDeniedPaths: mergeArray(
+				"mxc.extraDeniedPaths",
+				p.mxc?.extraDeniedPaths,
+				g.mxc?.extraDeniedPaths,
+				defaults.mxc?.extraDeniedPaths,
+				replaceGlobalArrays,
+			),
+		},
 		network: pick(p.network, g.network, defaults.network),
 		filesystem: {
 			allowWrite: mergeArray(
@@ -379,7 +498,9 @@ function expandRule(rule: string, cwd: string, warnings: string[]): ResolvedPath
 	let candidates: string[];
 	if (hasGlob(absolute)) {
 		try {
-			candidates = globSync(absolute);
+			// Node's glob parser treats `\` as an escape. Windows paths are
+			// handed to it with forward slashes and normalized by realpath below.
+			candidates = globSync(process.platform === "win32" ? absolute.replace(/\\/g, "/") : absolute);
 		} catch (error) {
 			warnings.push(`${rule}: glob failed (${(error as Error).message}); ignoring`);
 			return [];
@@ -687,6 +808,9 @@ function normalize(
 
 	const allowWrite = expandAll(merged.filesystem?.allowWrite);
 	const denyWrite = expandAll(merged.filesystem?.denyWrite);
+	const extraReadwrite = expandAll(merged.mxc?.extraReadwritePaths);
+	const extraReadonly = expandAll(merged.mxc?.extraReadonlyPaths);
+	const extraDenied = expandAll(merged.mxc?.extraDeniedPaths);
 
 	const allowWritePaths = new Set(allowWrite.map((path) => path.path));
 	const denyWritePaths = new Set(denyWrite.map((path) => path.path));
@@ -710,6 +834,7 @@ function normalize(
 	}));
 	const rawDenyWrite = dedupStrings([
 		...(merged.filesystem?.denyWrite ?? []),
+		...(merged.mxc?.extraReadonlyPaths ?? []),
 		...gitReadOnly.map((path) => path.path),
 		...denyCreate.map((path) => path.path),
 	]);
@@ -717,11 +842,21 @@ function normalize(
 	const env = merged.env ?? {};
 	return {
 		enabled: merged.enabled ?? true,
+		engine: merged.engine ?? "auto",
+		mxc: {
+			backend: merged.mxc?.backend ?? "auto",
+			shell: merged.mxc?.shell ?? "busybox",
+			busyboxPath: merged.mxc?.busyboxPath,
+			executorPath: merged.mxc?.executorPath,
+			extraReadwrite,
+			extraReadonly,
+			extraDenied,
+		},
 		network: merged.network ?? "none",
-		allowWrite: [...allowWrite, ...gitWritable],
-		denyWrite: [...denyWrite, ...gitReadOnly],
+		allowWrite: [...allowWrite, ...gitWritable, ...extraReadwrite],
+		denyWrite: [...denyWrite, ...gitReadOnly, ...extraReadonly],
 		denyCreate,
-		denyRead: expandAll(merged.filesystem?.denyRead),
+		denyRead: [...expandAll(merged.filesystem?.denyRead), ...extraDenied],
 		tmp: merged.tmp ?? "private",
 		env: {
 			passthrough: env.passthrough ?? [],
@@ -733,9 +868,9 @@ function normalize(
 		onUnavailable: merged.onUnavailable ?? "error",
 		extraBwrapArgs: merged.extraBwrapArgs ?? [],
 		rules: {
-			allowWrite: merged.filesystem?.allowWrite ?? [],
+			allowWrite: [...(merged.filesystem?.allowWrite ?? []), ...(merged.mxc?.extraReadwritePaths ?? [])],
 			denyWrite: rawDenyWrite,
-			denyRead: merged.filesystem?.denyRead ?? [],
+			denyRead: [...(merged.filesystem?.denyRead ?? []), ...(merged.mxc?.extraDeniedPaths ?? [])],
 		},
 		variables,
 		gitGuard: {

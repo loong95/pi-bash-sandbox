@@ -1,13 +1,25 @@
 {
   "name": "pi-bash-sandbox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "bubblewrap-based sandboxed bash tool for pi: per-project, stateless, config-driven",
+  "description": "MXC-based sandboxed bash/powershell tool for pi: per-project, stateless, config-driven (Windows, Linux, macOS)",
   "license": "MIT",
   "author": "loong",
-  "keywords": ["pi", "pi-package", "pi-extension", "bubblewrap", "sandbox", "bash"],
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "mxc",
+    "bubblewrap",
+    "seatbelt",
+    "processcontainer",
+    "sandbox",
+    "bash",
+    "windows",
+    "macos"
+  ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "type": "module",
   "files": [
@@ -40,5 +52,8 @@
     "tsx": "^4",
     "typescript": "^5"
   },
-  "packageManager": "pnpm@10.17.1"
+  "packageManager": "pnpm@10.17.1",
+  "dependencies": {
+    "@microsoft/mxc-sdk": "^1.0.1"
+  }
 }

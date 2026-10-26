@@ -179,14 +179,18 @@ test("clearenv: host secrets are absent, PATH survives", { skip }, () => {
 function realOperations(project: string, config: unknown) {
 	writeFileSync(join(project, ".pi", "sandbox.json"), JSON.stringify(config));
 	return createSandboxedBashOperations({
-		resolveConfig: async (cwd) =>
-			loadSandboxConfig({
+		resolveConfig: async (cwd) => {
+			// This file pins the original bwrap argv/semantics. MXC has its own
+			// integration coverage in mxc-linux.test.ts.
+			const resolved = loadSandboxConfig({
 				projectRoot: cwd,
 				worktreeRoot: cwd,
 				cwd,
 				projectTrusted: true,
 				agentDir: join(project, "agent"),
-			}),
+			});
+			return { ...resolved, engine: "bwrap" };
+		},
 		capabilities: () => CAPS,
 		shell: () => ({ shell: "/bin/bash", args: ["-c"] }),
 		fallback: {

@@ -83,7 +83,7 @@ function safeRealpath(path: string): string {
 
 function expandTilde(path: string, home: string = homedir()): string {
 	if (path === "~") return home;
-	if (path.startsWith("~/")) return join(home, path.slice(2));
+	if (path.startsWith("~/") || path.startsWith("~\\")) return join(home, path.slice(2));
 	return path;
 }
 

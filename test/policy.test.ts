@@ -119,6 +119,10 @@ test("rule helpers: within vs deny semantics", () => {
 	assert.equal(targetMatchesDenyRule(join(PROJECT, "deep", ".env"), ".env", PROJECT), true);
 	assert.equal(targetMatchesDenyRule(join(PROJECT, "a.pem"), "*.pem", PROJECT), true);
 	assert.equal(targetMatchesDenyRule(join(PROJECT, "a.txt"), "*.pem", PROJECT), false);
+	// A bare non-glob name is also a cwd-relative path, so it covers a directory's
+	// descendants the same way the shell engine's path expansion does.
+	assert.equal(targetMatchesDenyRule(join(PROJECT, "secret", "key.txt"), "secret", PROJECT), true);
+	assert.equal(targetMatchesDenyRule(join(PROJECT, "sub", "secret.txt"), "secret", PROJECT), false);
 });
 
 test("normalizeTarget resolves symlinked parents for new files", () => {

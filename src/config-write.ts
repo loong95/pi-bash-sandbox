@@ -28,6 +28,11 @@ export function configPathForScope(scope: ConfigScope, input: ConfigPathInput): 
 
 export const CONFIG_TEMPLATE = {
 	enabled: true,
+	engine: "auto",
+	mxc: {
+		backend: "auto",
+		shell: "busybox",
+	},
 	network: "none",
 	filesystem: {
 		allowWrite: [".", "/tmp"],

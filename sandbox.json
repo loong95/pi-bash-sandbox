@@ -1,19 +1,56 @@
 {
   "enabled": true,
+  "engine": "auto",
+  "mxc": {
+    "backend": "auto",
+    "shell": "busybox"
+  },
   "network": "none",
   "filesystem": {
-    "allowWrite": [".", "/tmp"],
-    "denyWrite": ["~/.ssh", ".env", ".env.*", "*.pem", "*.key"],
-    "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh"]
+    "allowWrite": [
+      ".",
+      "/tmp"
+    ],
+    "denyWrite": [
+      "~/.ssh",
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key"
+    ],
+    "denyRead": [
+      "~/.ssh",
+      "~/.aws",
+      "~/.gnupg",
+      "~/.config/gh"
+    ]
   },
   "tmp": "private",
   "env": {
-    "passthrough": ["PATH", "HOME", "TERM", "LANG", "LC_*", "TMPDIR", "PI_*"],
-    "deny": ["*_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "ANTHROPIC_*", "OPENAI_*"]
+    "passthrough": [
+      "PATH",
+      "HOME",
+      "TERM",
+      "LANG",
+      "LC_*",
+      "TMPDIR",
+      "PI_*"
+    ],
+    "deny": [
+      "*_KEY",
+      "*_TOKEN",
+      "*_SECRET",
+      "*_PASSWORD",
+      "ANTHROPIC_*",
+      "OPENAI_*"
+    ]
   },
   "unsharePid": true,
   "weakerNestedSandbox": false,
   "onUnavailable": "error",
   "extraBwrapArgs": [],
-  "tools": { "enabled": true, "requireAllowWrite": true }
+  "tools": {
+    "enabled": true,
+    "requireAllowWrite": true
+  }
 }

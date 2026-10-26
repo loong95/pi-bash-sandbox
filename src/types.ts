@@ -10,6 +10,34 @@ export type NetworkMode = "none" | "host";
 export type TmpMode = "private" | "shared";
 export type UnavailablePolicy = "error" | "fallback";
 
+/**
+ * Execution engine.
+ *
+ * - `auto`: MXC where the host supports it, bubblewrap otherwise (Linux).
+ * - `mxc`: MXC only; `onUnavailable` decides what happens if it cannot run.
+ * - `bwrap`: the original bubblewrap argument builder (Linux only).
+ */
+export type EngineMode = "auto" | "mxc" | "bwrap";
+export type MxcBackendChoice = "auto" | "bubblewrap" | "seatbelt" | "processcontainer";
+
+/** Windows shell used to interpret bash commands under ProcessContainer. */
+export type MxcShellChoice = "busybox" | "powershell" | "cmd" | string;
+
+/** User-editable `mxc` section. */
+export interface MxcConfigFile {
+	backend?: MxcBackendChoice;
+	/** Windows only. A kind (`busybox`/`powershell`/`cmd`) or an executable path. */
+	shell?: MxcShellChoice;
+	/** Explicit busybox.exe location; defaults to PATH lookup. */
+	busyboxPath?: string;
+	/** Override the MXC executor binary (advanced/testing). */
+	executorPath?: string;
+	/** Extra policy paths layered on top of the standard rules. */
+	extraReadwritePaths?: string[];
+	extraReadonlyPaths?: string[];
+	extraDeniedPaths?: string[];
+}
+
 /** Policy for intercepting read/write/edit via the `tool_call` hook. */
 export interface ToolsPolicyConfig {
 	/** Intercept read/write/edit. Default true. */
@@ -23,6 +51,9 @@ export interface SandboxConfigFile {
 	/** Project-only escape hatch for array fields; global arrays are inherited by default. */
 	replaceGlobalArrays?: string[];
 	enabled?: boolean;
+	/** Execution engine. Default `auto`: MXC when available, bubblewrap on Linux. */
+	engine?: EngineMode;
+	mxc?: MxcConfigFile;
 	network?: NetworkMode;
 	filesystem?: {
 		allowWrite?: string[];
@@ -128,9 +159,22 @@ export interface ResolvedToolsPolicy {
 	requireAllowWrite: boolean;
 }
 
-/** Fully resolved config, ready for `buildBwrapArgs`. */
+/** Fully resolved `mxc` section. */
+export interface ResolvedMxcConfig {
+	backend: MxcBackendChoice;
+	shell: MxcShellChoice;
+	busyboxPath?: string;
+	executorPath?: string;
+	extraReadwrite: ResolvedPath[];
+	extraReadonly: ResolvedPath[];
+	extraDenied: ResolvedPath[];
+}
+
+/** Fully resolved config, ready for the selected engine. */
 export interface ResolvedSandboxConfig {
 	enabled: boolean;
+	engine: EngineMode;
+	mxc: ResolvedMxcConfig;
 	network: NetworkMode;
 	allowWrite: ResolvedPath[];
 	denyWrite: ResolvedPath[];

@@ -100,6 +100,14 @@ export function makeResolvedConfig(
 	const sources = overrides.sources ?? makeSources();
 	return {
 		enabled: true,
+		engine: "auto",
+		mxc: {
+			backend: "auto",
+			shell: "busybox",
+			extraReadwrite: [],
+			extraReadonly: [],
+			extraDenied: [],
+		},
 		network: "none",
 		allowWrite: [],
 		denyWrite: [],

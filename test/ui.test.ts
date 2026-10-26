@@ -89,3 +89,26 @@ test("formatPathExplanation renders decisions and matched rules", () => {
 	assert.match(text, /bash : read hidden, write blocked/);
 	assert.match(text, /denyRead\s+\u2190 ~\/\.ssh/);
 });
+
+test("formatSandboxStatus reports the MXC engine and shell errors", () => {
+	const text = formatSandboxStatus({
+		enabled: true,
+		project: PROJECT,
+		config: CONFIG,
+		capabilities: CAPS,
+		engine: "mxc",
+		mxcCapabilities: {
+			available: true,
+			backend: "processcontainer",
+			executor: "C:\\mxc\\wxc-exec.exe",
+			tier: "base-container",
+		},
+		mxcShellError: "busybox.exe not found",
+		mxcNetworkError: "slirp4netns missing",
+	});
+	assert.match(text, /engine: mxc/);
+	assert.match(text, /mxc: available \(processcontainer, tier=base-container\)/);
+	assert.match(text, /executor: C:\\mxc\\wxc-exec\.exe/);
+	assert.match(text, /mxc shell: busybox\.exe not found/);
+	assert.match(text, /mxc network: slirp4netns missing/);
+});

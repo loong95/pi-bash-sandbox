@@ -6,6 +6,7 @@
 import type { PathExplanation } from "./policy.ts";
 import type { ProjectInfo } from "./project.ts";
 import type { BwrapCapabilities, ResolvedPath, ResolvedSandboxConfig } from "./types.ts";
+import type { MxcCapabilities } from "./mxc/types.ts";
 
 function formatPaths(paths: ResolvedPath[]): string {
 	return paths.length ? paths.map((path) => path.path).join(", ") : "(none)";
@@ -17,6 +18,13 @@ export interface SandboxStatusInput {
 	project: ProjectInfo;
 	config: ResolvedSandboxConfig;
 	capabilities: BwrapCapabilities;
+	mxcCapabilities?: MxcCapabilities;
+	/** Engine selected for the next command. */
+	engine?: "mxc" | "bwrap";
+	/** Windows shell resolution problem (e.g. busybox not installed). */
+	mxcShellError?: string;
+	/** Network prerequisites missing for the MXC backend on this host. */
+	mxcNetworkError?: string;
 }
 
 export function formatSandboxStatus(input: SandboxStatusInput): string {
@@ -24,6 +32,20 @@ export function formatSandboxStatus(input: SandboxStatusInput): string {
 	const lines: string[] = [];
 
 	lines.push(`bash sandbox: ${input.enabled ? "enabled" : "DISABLED (--no-sandbox)"}`);
+	if (input.engine) lines.push(`engine: ${input.engine} (config: ${config.engine})`);
+	if (input.mxcCapabilities) {
+		const mxc = input.mxcCapabilities;
+		lines.push(
+			`mxc: ${
+				mxc.available
+					? `available (${mxc.backend ?? "unknown backend"}${mxc.tier ? `, tier=${mxc.tier}` : ""})`
+					: `UNAVAILABLE${mxc.error ? ` - ${mxc.error}` : ""}`
+			}`,
+		);
+		if (mxc.executor) lines.push(`executor: ${mxc.executor}`);
+	}
+	if (input.mxcShellError) lines.push(`mxc shell: ${input.mxcShellError}`);
+	if (input.mxcNetworkError) lines.push(`mxc network: ${input.mxcNetworkError}`);
 	lines.push(`project root: ${project.projectRoot}${project.isWorktree ? " (linked worktree)" : ""}`);
 	if (project.isWorktree) lines.push(`worktree: ${project.worktreeRoot}`);
 	lines.push(

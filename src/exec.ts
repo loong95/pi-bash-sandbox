@@ -1,139 +1,45 @@
 /**
- * Sandboxed `BashOperations`.
+ * Sandboxed `BashOperations` dispatcher.
  *
- * Stateless: every call resolves config for its own cwd, probes bwrap (cached),
- * builds argv, and spawns a fresh `bwrap`. No long-lived sandbox object.
+ * Stateless: every call resolves config for its own cwd, selects an engine,
+ * and spawns a fresh sandbox. No long-lived sandbox object.
+ *
+ * Engines:
+ * - `mxc`: Microsoft eXecution Container (bubblewrap / Seatbelt /
+ *   ProcessContainer), invoked through its standalone executor binary.
+ * - `bwrap`: the original bubblewrap argument builder, used on Linux as the
+ *   fallback when MXC is unavailable.
+ *
+ * `engine: "auto"` (default) prefers MXC and falls back to bwrap on Linux.
  *
  * Contract mirrors pi's built-in local shell operations:
  * - stdout and stderr both stream through `onData(Buffer)`
- * - abort kills the whole process group and rejects with `Error("aborted")`
- * - timeout kills the process group and rejects with `Error("timeout:<seconds>")`
+ * - abort kills the whole process tree and rejects with `Error("aborted")`
+ * - timeout kills the process tree and rejects with `Error("timeout:<seconds>")`
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { buildBwrapArgs, type ShellSpec } from "./bwrap.ts";
+import { resolveTimeoutMs, waitForChildProcess } from "./child.ts";
 import { resolveSandboxEnv } from "./env.ts";
-import type { BwrapCapabilities, ResolvedSandboxConfig } from "./types.ts";
-
-const MAX_TIMEOUT_MS = 2_147_483_647;
-const EXIT_STDIO_GRACE_MS = 100;
-
-function resolveTimeoutMs(timeout: number | undefined): number | undefined {
-	if (timeout === undefined) return undefined;
-	if (!Number.isFinite(timeout) || timeout <= 0) {
-		throw new Error("Invalid timeout: must be a finite number of seconds");
-	}
-	const timeoutMs = timeout * 1000;
-	if (timeoutMs > MAX_TIMEOUT_MS) {
-		throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_MS / 1000} seconds`);
-	}
-	return timeoutMs;
-}
-
-function killProcessGroup(pid: number | undefined): void {
-	if (!pid) return;
-	try {
-		process.kill(-pid, "SIGKILL");
-	} catch {
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			// Already gone.
-		}
-	}
-}
-
-/**
- * Wait for a child to terminate without hanging on inherited stdio handles.
- * Ported from pi's `utils/child-process.ts` so sandboxed commands behave the
- * same as built-in ones when a detached descendant keeps a pipe open.
- */
-function waitForChildProcess(child: ChildProcess): Promise<number | null> {
-	return new Promise((resolve, reject) => {
-		let settled = false;
-		let exited = false;
-		let exitCode: number | null = null;
-		let postExitTimer: NodeJS.Timeout | undefined;
-		let stdoutEnded = child.stdout === null;
-		let stderrEnded = child.stderr === null;
-
-		const cleanup = () => {
-			if (postExitTimer) {
-				clearTimeout(postExitTimer);
-				postExitTimer = undefined;
-			}
-			child.removeListener("error", onError);
-			child.removeListener("exit", onExit);
-			child.removeListener("close", onClose);
-			child.stdout?.removeListener("end", onStdoutEnd);
-			child.stderr?.removeListener("end", onStderrEnd);
-			child.stdout?.removeListener("data", onData);
-			child.stderr?.removeListener("data", onData);
-		};
-
-		const finalize = (code: number | null) => {
-			if (settled) return;
-			settled = true;
-			cleanup();
-			child.stdout?.destroy();
-			child.stderr?.destroy();
-			resolve(code);
-		};
-
-		const maybeFinalizeAfterExit = () => {
-			if (!exited || settled) return;
-			if (stdoutEnded && stderrEnded) finalize(exitCode);
-		};
-
-		const armIdleTimer = () => {
-			if (postExitTimer) clearTimeout(postExitTimer);
-			postExitTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_GRACE_MS);
-		};
-
-		const onData = () => {
-			if (exited && !settled) armIdleTimer();
-		};
-		const onStdoutEnd = () => {
-			stdoutEnded = true;
-			maybeFinalizeAfterExit();
-		};
-		const onStderrEnd = () => {
-			stderrEnded = true;
-			maybeFinalizeAfterExit();
-		};
-		const onError = (error: Error) => {
-			if (settled) return;
-			settled = true;
-			cleanup();
-			reject(error);
-		};
-		const onExit = (code: number | null) => {
-			exited = true;
-			exitCode = code;
-			maybeFinalizeAfterExit();
-			if (!settled) armIdleTimer();
-		};
-		const onClose = (code: number | null) => finalize(code);
-
-		child.stdout?.once("end", onStdoutEnd);
-		child.stderr?.once("end", onStderrEnd);
-		child.stdout?.on("data", onData);
-		child.stderr?.on("data", onData);
-		child.once("error", onError);
-		child.once("exit", onExit);
-		child.once("close", onClose);
-	});
-}
+import { runMxcCommand } from "./mxc/exec.ts";
+import { checkMxcNetwork } from "./mxc/network.ts";
+import { resolveRequestedBackend } from "./mxc/request.ts";
+import { resolveWindowsCommand } from "./mxc/shell.ts";
+import type { MxcCapabilities } from "./mxc/types.ts";
+import type { BwrapCapabilities, MxcShellChoice, ResolvedSandboxConfig } from "./types.ts";
 
 export interface SandboxedExecDeps {
 	/** Resolve the sandbox config for the command cwd. */
 	resolveConfig: (cwd: string) => Promise<ResolvedSandboxConfig>;
 	/** Probe bwrap capabilities (cached by the caller/probe module). */
 	capabilities: () => BwrapCapabilities;
-	/** Resolve the shell to run inside the sandbox. */
+	/** Probe MXC availability (cached by the caller/probe module). */
+	mxcCapabilities?: (config: ResolvedSandboxConfig) => MxcCapabilities;
+	/** Resolve the POSIX shell used inside the sandbox (Linux/macOS). */
 	shell: () => ShellSpec;
 	/** Whether sandboxing is enabled at all (e.g. `--no-sandbox`). Default: true. */
 	enabled?: () => boolean;
@@ -141,11 +47,54 @@ export interface SandboxedExecDeps {
 	fallback: BashOperations;
 	/** Override the bwrap binary (tests). */
 	bwrapPath?: string;
-	/** Called when bwrap is unavailable and policy is "fallback". */
+	/** Host environment for the MXC executor process (tests). */
+	hostEnv?: NodeJS.ProcessEnv;
+	/** Test seam for Windows shell detection. */
+	exists?: (path: string) => boolean;
+	/** Force the Windows shell for this operations instance (PowerShell tool). */
+	mxcShell?: MxcShellChoice;
+	/** Called when the selected engine is unavailable and policy is "fallback". */
 	onUnavailable?: (reason: string, cwd: string) => void;
+	platform?: NodeJS.Platform;
 }
 
-async function runSandboxed(
+export type SandboxEngine = "mxc" | "bwrap";
+
+function unavailableReason(error: string | undefined, fallback: string): string {
+	return error && error.trim().length > 0 ? error : fallback;
+}
+
+/** Engine selection shared by execution, `/sandbox`, and `/sandbox-test`. */
+export function chooseSandboxEngine(
+	config: ResolvedSandboxConfig,
+	mxcAvailable: boolean,
+	platform: NodeJS.Platform = process.platform,
+	mxcNetworkOk = true,
+): SandboxEngine {
+	if (config.engine === "bwrap") return "bwrap";
+	if (config.engine === "mxc") return "mxc";
+	// auto: Windows/macOS have no bubblewrap fallback.
+	if (platform === "win32" || platform === "darwin") return "mxc";
+	return mxcAvailable && mxcNetworkOk ? "mxc" : "bwrap";
+}
+
+export function selectSandboxEngine(
+	config: ResolvedSandboxConfig,
+	deps: SandboxedExecDeps,
+	platform: NodeJS.Platform,
+): SandboxEngine {
+	// Avoid probing MXC when the user explicitly selected bwrap.
+	if (config.engine === "bwrap") return "bwrap";
+	const network = checkMxcNetwork(config.network, platform, deps.hostEnv ?? process.env);
+	return chooseSandboxEngine(
+		config,
+		deps.mxcCapabilities?.(config).available ?? false,
+		platform,
+		network.ok,
+	);
+}
+
+async function runBwrap(
 	argv: string[],
 	input: {
 		command: string;
@@ -156,12 +105,12 @@ async function runSandboxed(
 		timeout?: number;
 	},
 ): Promise<{ exitCode: number | null }> {
-	const timeoutMs = resolveTimeoutMs(input.timeout);
 	const [bin, ...args] = argv;
+	const platform = process.platform;
 
 	const child = spawn(bin, args, {
 		cwd: input.cwd,
-		detached: process.platform !== "win32",
+		detached: platform !== "win32",
 		stdio: [input.commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 		windowsHide: true,
 	});
@@ -173,12 +122,24 @@ async function runSandboxed(
 
 	let timedOut = false;
 	let timeoutHandle: NodeJS.Timeout | undefined;
-	const onAbort = () => killProcessGroup(child.pid);
+	const onAbort = () => {
+		if (!child.pid) return;
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch {
+			try {
+				process.kill(child.pid, "SIGKILL");
+			} catch {
+				// Already gone.
+			}
+		}
+	};
 
-	if (timeoutMs !== undefined) {
+	if (input.timeout !== undefined) {
+		const timeoutMs = input.timeout * 1000;
 		timeoutHandle = setTimeout(() => {
 			timedOut = true;
-			killProcessGroup(child.pid);
+			onAbort();
 		}, timeoutMs);
 	}
 	if (input.signal) {
@@ -201,10 +162,13 @@ async function runSandboxed(
 }
 
 export function createSandboxedBashOperations(deps: SandboxedExecDeps): BashOperations {
+	const platform = deps.platform ?? process.platform;
+
 	return {
 		async exec(command, cwd, options) {
 			const { onData, signal, timeout, env } = options;
 			if (signal?.aborted) throw new Error("aborted");
+			resolveTimeoutMs(timeout);
 
 			try {
 				await access(cwd, constants.F_OK);
@@ -221,31 +185,77 @@ export function createSandboxedBashOperations(deps: SandboxedExecDeps): BashOper
 				return deps.fallback.exec(command, cwd, options);
 			}
 
+			const engine = selectSandboxEngine(config, deps, platform);
+
+			if (engine === "mxc") {
+				const capabilities = deps.mxcCapabilities?.(config) ?? {
+					available: false,
+					error: "MXC support is not wired into this command",
+				};
+				const network = checkMxcNetwork(config.network, platform, deps.hostEnv ?? process.env);
+				const shellError =
+					platform === "win32"
+						? resolveWindowsCommand({
+								choice: deps.mxcShell ?? config.mxc.shell,
+								command: "",
+								busyboxPath: config.mxc.busyboxPath,
+								env: deps.hostEnv ?? process.env,
+								exists: deps.exists,
+							}).error
+						: undefined;
+				if (!capabilities.available || !capabilities.executor || !network.ok || shellError) {
+					const reason = unavailableReason(
+						shellError ?? (!network.ok ? network.error : capabilities.error),
+						"MXC is not available",
+					);
+					if (config.onUnavailable === "error") {
+						throw new Error(`Sandbox unavailable: ${reason}. Run /sandbox for details.`);
+					}
+					deps.onUnavailable?.(reason, cwd);
+					return deps.fallback.exec(command, cwd, options);
+				}
+
+				return runMxcCommand({
+					executor: capabilities.executor,
+					backend: resolveRequestedBackend(config.mxc.backend, capabilities.backend, platform),
+					command,
+					cwd,
+					env: resolveSandboxEnv(env ?? process.env, config.env, platform),
+					config,
+					posixShell:
+						platform === "win32" ? { shell: "sh", args: ["-c"] } : deps.shell(),
+					onData,
+					signal,
+					timeout,
+					platform,
+					hostEnv: deps.hostEnv ?? process.env,
+					shellChoice: deps.mxcShell,
+					exists: deps.exists,
+				});
+			}
+
 			const capabilities = deps.capabilities();
 			if (!capabilities.available) {
+				const reason = unavailableReason(capabilities.error, "bubblewrap is not usable");
 				if (config.onUnavailable === "error") {
-					throw new Error(
-						`Sandbox unavailable: ${capabilities.error ?? "bubblewrap is not usable"}. Run /sandbox for details.`,
-					);
+					throw new Error(`Sandbox unavailable: ${reason}. Run /sandbox for details.`);
 				}
-				deps.onUnavailable?.(capabilities.error ?? "bubblewrap unavailable", cwd);
+				deps.onUnavailable?.(reason, cwd);
 				return deps.fallback.exec(command, cwd, options);
 			}
 
-			const sourceEnv = env ?? process.env;
-			const sandboxEnv = resolveSandboxEnv(sourceEnv, config.env);
 			const shell = deps.shell();
 			const argv = buildBwrapArgs({
 				command,
 				cwd,
-				env: sandboxEnv,
+				env: resolveSandboxEnv(env ?? process.env, config.env, platform),
 				config,
 				capabilities,
 				shell,
 				bwrapPath: deps.bwrapPath,
 			});
 
-			return runSandboxed(argv, {
+			return runBwrap(argv, {
 				command,
 				cwd,
 				commandFromStdin: shell.commandTransport === "stdin",

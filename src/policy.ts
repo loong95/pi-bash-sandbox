@@ -20,12 +20,21 @@ import { expandTilde, hasGlob } from "./config.ts";
 import type { PathVariables, ResolvedSandboxConfig } from "./types.ts";
 import { expandVariables } from "./variables.ts";
 
+const WINDOWS = process.platform === "win32";
+
+/** Normalize separators (and case on Windows) before comparing paths. */
+function comparePath(path: string): string {
+	const normalized = path.replace(/\\/g, "/");
+	return WINDOWS ? normalized.toLowerCase() : normalized;
+}
+
 function escapeRegex(input: string): string {
 	return input.replace(/[.+^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Path glob: `**` crosses separators, `*` / `?` do not. */
 export function globToPathRegex(pattern: string): RegExp {
+	pattern = comparePath(pattern);
 	let out = "";
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
@@ -42,7 +51,7 @@ export function globToPathRegex(pattern: string): RegExp {
 			out += escapeRegex(char);
 		}
 	}
-	return new RegExp(`^${out}$`);
+	return new RegExp(`^${out}$`, WINDOWS ? "i" : "");
 }
 
 function resolveRule(rule: string, cwd: string): string {
@@ -77,8 +86,10 @@ export function targetWithinRule(
 ): boolean {
 	return expandVariablesForPolicy(rule, variables).some((expanded) => {
 		const absolute = resolveRule(expanded, cwd);
-		if (hasGlob(absolute)) return globToPathRegex(absolute).test(target);
-		return target === absolute || target.startsWith(absolute.endsWith("/") ? absolute : `${absolute}/`);
+		const targetKey = comparePath(target);
+		if (hasGlob(absolute)) return globToPathRegex(absolute).test(targetKey);
+		const base = comparePath(absolute).replace(/\/+$/, "");
+		return targetKey === base || targetKey.startsWith(`${base}/`);
 	});
 }
 
@@ -91,10 +102,14 @@ export function targetMatchesDenyRule(
 ): boolean {
 	return expandVariablesForPolicy(rule, variables).some((expanded) => {
 		const tildeExpanded = expandTilde(expanded);
-		if (!isAbsolute(tildeExpanded) && !tildeExpanded.includes("/")) {
-			return globToPathRegex(tildeExpanded).test(basename(target));
+		if (!isAbsolute(tildeExpanded) && !tildeExpanded.includes("/") && !tildeExpanded.includes("\\")) {
+			if (globToPathRegex(tildeExpanded).test(basename(target))) return true;
+			// A bare non-glob name also names a path relative to cwd, so
+			// `denyRead: ["secret"]` covers `secret/key.txt`, matching the shell
+			// engine (which expands the rule to <cwd>/secret).
+			return !hasGlob(tildeExpanded) ? targetWithinRule(target, tildeExpanded, cwd, variables) : false;
 		}
-		return targetWithinRule(target, expanded, cwd);
+		return targetWithinRule(target, expanded, cwd, variables);
 	});
 }
 

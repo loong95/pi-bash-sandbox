@@ -45,3 +45,26 @@ test("resolveSandboxEnv: keys are sorted for deterministic argv", () => {
 	});
 	assert.deepEqual(Object.keys(env), ["ALPHA", "MIKE", "ZED"]);
 });
+
+test("resolveSandboxEnv: Windows variable names are case-insensitive", () => {
+	const env = resolveSandboxEnv(
+		{
+			Path: "C:\\Windows\\System32",
+			SystemRoot: "C:\\Windows",
+			UserProfile: "C:\\Users\\me",
+			ANTHROPIC_API_KEY: "secret",
+		},
+		{
+			passthrough: ["PATH", "SystemRoot", "USERPROFILE"],
+			deny: ["*_KEY"],
+			set: { HOME: "C:\\Users\\me" },
+		},
+		"win32",
+	);
+	assert.deepEqual(env, {
+		HOME: "C:\\Users\\me",
+		Path: "C:\\Windows\\System32",
+		SystemRoot: "C:\\Windows",
+		UserProfile: "C:\\Users\\me",
+	});
+});

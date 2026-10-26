@@ -36,10 +36,18 @@ export function matchGlob(name: string, pattern: string): boolean {
 export function resolveSandboxEnv(
 	source: NodeJS.ProcessEnv,
 	config: ResolvedEnvConfig,
+	platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
 	const out: Record<string, string> = {};
-	const isDenied = (name: string) => config.deny.some((pattern) => matchGlob(name, pattern));
-	const isAllowed = (name: string) => config.passthrough.some((pattern) => matchGlob(name, pattern));
+	// Windows environment variable names are case-insensitive. Node preserves
+	// the casing from the process block (`Path`, `SystemRoot`), which would not
+	// match the `PATH` rules otherwise.
+	const caseless = platform === "win32";
+	const key = (name: string) => (caseless ? name.toLowerCase() : name);
+	const isDenied = (name: string) =>
+		config.deny.some((pattern) => matchGlob(key(name), key(pattern)));
+	const isAllowed = (name: string) =>
+		config.passthrough.some((pattern) => matchGlob(key(name), key(pattern)));
 
 	for (const name of Object.keys(source).sort()) {
 		const value = source[name];
@@ -50,6 +58,10 @@ export function resolveSandboxEnv(
 	}
 
 	for (const name of Object.keys(config.set).sort()) {
+		if (caseless) {
+			const existing = Object.keys(out).find((candidate) => key(candidate) === key(name));
+			if (existing && existing !== name) delete out[existing];
+		}
 		out[name] = config.set[name];
 	}
 
